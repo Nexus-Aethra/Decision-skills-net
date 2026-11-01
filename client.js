@@ -42,12 +42,27 @@
         const { useEffect, useMemo, useRef, useState } = React
 
         /** Remote 方法清单：必须与宿主 installSkillManager 的 methods 逐项一致。 */
-        const REMOTE_METHODS = ['list', 'read', 'setEnabled']
+        const REMOTE_METHODS = ['list', 'listForSession', 'read', 'setEnabled']
         const NS = 'skillManager'
         const LOCALE_NS = 'decisionSkills'
         const SECTION_ID = 'decision-skills'
         const SLOT = 'settings.section'
         const PASS_THROUGH = () => ({ parse: (value) => value })
+
+        /**
+         * 方法与 wire 参数的对应关系。**必须与宿主方法的实参个数逐项一致**：
+         * Host 网关会拿 descriptor.parameters 去校验 args 的字段集合，
+         * 多声明一个参数就报 gateway/arguments-invalid。
+         *   list        ()       -> 无参数
+         *   read        (file)   -> 一个
+         *   setEnabled  (file,..)-> 实际收一个对象
+         */
+        const METHOD_PARAMS = {
+          list: [],
+          listForSession: ['request'],
+          read: ['request'],
+          setEnabled: ['request'],
+        }
 
         /** 手写 typert 贡献描述；外部包走不到生成流水线。 */
         const TYPERT_REMOTE = {
@@ -58,16 +73,23 @@
             namespace: NS,
             method,
             invocation: { kind: 'direct' },
-            parameters: [{
-              name: 'request',
-              wire: 'request',
+            parameters: METHOD_PARAMS[method].map((name) => ({
+              name,
+              wire: name,
               source: 'json',
               codec: {
                 mode: 'strict',
-                typeSymbol: MODULE_ID + '#' + NS + '/' + method + ':request',
+                typeSymbol: MODULE_ID + '#' + NS + '/' + method + ':' + name,
                 create: PASS_THROUGH,
               },
-            }],
+            })),
+            // result 不可省略：网关在 invoke() 里直接读 descriptor.result.mode，
+            // 缺了它运行期抛 "Cannot read properties of undefined (reading 'mode')"。
+            result: {
+              mode: 'strict',
+              typeSymbol: MODULE_ID + '#' + NS + '/' + method + ':result',
+              create: PASS_THROUGH,
+            },
           })),
         }
 
@@ -77,7 +99,9 @@
           subtitle: '系统级与所有工作区的 SKILL.md',
           refresh: '刷新', search: '搜索名称或描述',
           filterAll: '全部', filterEnabled: '已启用', filterDisabled: '已关闭',
-          scopeSystem: '系统级', scopeProject: '工作区',
+          scopeSystem: '系统级', scopeProject: '工作区', scopeBundled: '内置',
+          virtualSkill: '（内置资源，无文件路径）',
+          readOnly: '内置技能不可开关',
           countSkills: '个技能', countEnabled: '已启用', countDisabled: '已关闭',
           empty: '这个范围里还没有技能。在 <工作区>/.agents/skills/<名字>/SKILL.md 新建即可。',
           loading: '正在读取…', error: '读取失败', retry: '重试',
@@ -91,7 +115,9 @@
           subtitle: 'SKILL.md across the system root and every workspace',
           refresh: 'Refresh', search: 'Search name or description',
           filterAll: 'All', filterEnabled: 'Enabled', filterDisabled: 'Disabled',
-          scopeSystem: 'System', scopeProject: 'Workspace',
+          scopeSystem: 'System', scopeProject: 'Workspace', scopeBundled: 'Bundled',
+          virtualSkill: '(bundled resource, no file path)',
+          readOnly: 'Bundled skills are read-only',
           countSkills: 'skills', countEnabled: 'enabled', countDisabled: 'disabled',
           empty: 'No skills yet. Create one at <workspace>/.agents/skills/<name>/SKILL.md.',
           loading: 'Loading…', error: 'Failed to load', retry: 'Retry',
@@ -178,10 +204,10 @@
             el('div', { key: 'main', style: styles.rowMain }, [
               el('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } }, [
                 el('span', { key: 'n', style: styles.skillName }, skill.name),
-                el('span', { key: 'b', style: styles.badge }, skill.rootKind),
+                el('span', { key: 'b', style: styles.badge }, skill.source),
               ]),
               el('div', { key: 'd', style: styles.skillDesc }, skill.description || t('noDescription')),
-              el('div', { key: 'p', style: styles.path }, skill.file),
+              el('div', { key: 'p', style: styles.path }, skill.path || t('virtualSkill')),
               el('div', { key: 'a', style: { marginTop: 2 } }, el('button', {
                 type: 'button', style: { ...styles.btn, padding: '3px 9px', fontSize: 11 },
                 onClick: onPreview,
@@ -203,7 +229,11 @@
           const call = async (method, request) => {
             const ns = props.namespace
             if (!ns || typeof ns[method] !== 'function') throw new Error(t('unreachable') + ': ' + NS + '/' + method)
-            const envelope = await ns[method]({ request })
+            // 实参直接就是第一个 wire 参数，不要再包一层 { request }：
+            // 多包一层会让 Host 收到 {request:{...}}，参数静默丢失。
+            // 参数个数必须与描述符一致：list 是无参方法，传 {} 会被
+            // 网关判为 arguments-invalid（args 字段集合不匹配）。
+            const envelope = request === undefined ? await ns[method]() : await ns[method](request)
             if (envelope && typeof envelope === 'object' && 'ok' in envelope) {
               if (!envelope.ok) {
                 const failure = envelope.error ?? {}
@@ -217,7 +247,7 @@
           const load = async () => {
             setState({ status: 'loading', data: null, error: null })
             try {
-              setState({ status: 'ready', data: await call('list', {}), error: null })
+              setState({ status: 'ready', data: await call('list'), error: null })
             } catch (error) {
               setState({ status: 'error', data: null, error: String((error && error.message) || error) })
             }
@@ -225,23 +255,34 @@
 
           useEffect(() => { void load() }, [])
 
+          // 行的身份用 path，bundled 技能没有 path，退回 name。
+          const keyOf = (s) => s.path || s.name
           const toggle = async (skill) => {
-            const key = skill.file
+            const key = keyOf(skill)
+            if (!skill.editable) {
+              DIAG('setEnabled', 'read-only (bundled): ' + skill.name)
+              return
+            }
             setBusy((prev) => ({ ...prev, [key]: true }))
-            try { await call('setEnabled', { file: skill.file, enabled: !skill.enabled }) } catch { /* 保留原状 */ }
+            try {
+              const outcome = await call('setEnabled', { file: skill.path, enabled: !skill.enabled })
+              if (outcome && outcome.ok === false) DIAG('setEnabled', 'host rejected: ' + String(outcome.error))
+            } catch (error) {
+              DIAG('setEnabled', String((error && error.message) || error))
+            }
             setBusy((prev) => ({ ...prev, [key]: false }))
             await load()
           }
 
           const openPreview = async (skill) => {
-            const key = skill.file
+            const key = keyOf(skill)
             if (preview[key] && preview[key].open) {
               setPreview((prev) => ({ ...prev, [key]: { open: false } }))
               return
             }
             setPreview((prev) => ({ ...prev, [key]: { open: true, text: null } }))
             try {
-              const result = await call('read', { file: skill.file })
+              const result = await call('read', { name: skill.name, file: skill.path ?? undefined })
               setPreview((prev) => ({ ...prev, [key]: { open: true, text: (result && result.content) || '' } }))
             } catch (error) {
               setPreview((prev) => ({ ...prev, [key]: { open: true, text: String((error && error.message) || error) } }))
@@ -251,22 +292,22 @@
           const view = useMemo(() => {
             if (!state.data) return null
             const q = query.trim().toLowerCase()
+            const keyOf = (s) => s.path || s.name
             const skills = state.data.skills
               .filter((s) => (filter === 'all' ? true : filter === 'enabled' ? s.enabled : !s.enabled))
               .filter((s) => q === '' || s.name.toLowerCase().includes(q)
                 || String(s.description || '').toLowerCase().includes(q))
-              .map((s) => (preview[s.file]
-                ? { ...s, previewOpen: preview[s.file].open, previewText: preview[s.file].text }
+              .map((s) => (preview[keyOf(s)]
+                ? { ...s, previewOpen: preview[keyOf(s)].open, previewText: preview[keyOf(s)].text }
                 : s))
-            const system = skills.filter((s) => s.scope === 'system')
-            const map = new Map()
+            // 三个桶：内置(bundled) / 系统级(user, custom, runtime) / 工作区(project)。
+            // 每个技能自带 source，按 source 归组，不再猜路径。
+            const groups = { bundled: [], system: [], project: [] }
             for (const s of skills) {
-              if (s.scope !== 'project') continue
-              const key = s.projectPath || ''
-              if (!map.has(key)) map.set(key, { title: s.projectTitle || key, skills: [] })
-              map.get(key).skills.push(s)
+              const bucket = groups[s.scope] ?? groups.system
+              bucket.push(s)
             }
-            return { system, projects: [...map.values()] }
+            return { groups, total: skills.length, probe: state.data.probe ?? [], probeDetail: state.data.probeDetail ?? [] }
           }, [state, query, filter, preview])
 
           const total = state.data ? state.data.skills.length : 0
@@ -305,26 +346,32 @@
               + ' · ' + (total - enabledCount) + ' ' + t('countDisabled')))
 
             if (total === 0) children.push(el('div', { key: 'em', style: styles.muted }, t('empty')))
+            if (view.probe && view.probe.length > 0) {
+              children.push(el('div', { key: 'pb', style: styles.muted },
+                'probe: ' + view.probe.map((p) => (p.title || '(global)') + '=' + String(p.cwd ?? '-')).join(' | ')))
+            if (view.probeDetail && view.probeDetail.length > 0) {
+              children.push(el('div', { key: 'pd', style: styles.muted },
+                'detail: ' + view.probeDetail.map((d) => d.cwd + ' -> ' + d.count + ' [' + JSON.stringify(d.bySource) + ']').join(' || ')))
+            }
+            }
 
-            if (view.system.length > 0) {
-              children.push(el('div', { key: 'gs', style: styles.group }, [
-                el('div', { key: 'gh', style: styles.groupHead }, t('scopeSystem')),
-                ...view.system.map((skill) => el(SkillRow, {
-                  key: skill.file, skill, t, busy: Boolean(busy[skill.file]),
+            const BUCKETS = [
+              ['bundled', 'scopeBundled'],
+              ['system', 'scopeSystem'],
+              ['project', 'scopeProject'],
+            ]
+            for (const [bucket, labelKey] of BUCKETS) {
+              const items = view.groups[bucket]
+              if (!items || items.length === 0) continue
+              const rowKey = (s) => s.path || s.name
+              children.push(el('div', { key: 'g-' + bucket, style: styles.group }, [
+                el('div', { key: 'gh', style: styles.groupHead }, t(labelKey) + ' · ' + items.length),
+                ...items.map((skill) => el(SkillRow, {
+                  key: rowKey(skill), skill, t, busy: Boolean(busy[rowKey(skill)]),
                   onToggle: () => void toggle(skill), onPreview: () => void openPreview(skill),
                 })),
               ]))
             }
-
-            view.projects.forEach((group, index) => {
-              children.push(el('div', { key: 'gp' + index, style: styles.group }, [
-                el('div', { key: 'gh', style: styles.groupHead }, t('scopeProject') + ' · ' + group.title),
-                ...group.skills.map((skill) => el(SkillRow, {
-                  key: skill.file, skill, t, busy: Boolean(busy[skill.file]),
-                  onToggle: () => void toggle(skill), onPreview: () => void openPreview(skill),
-                })),
-              ]))
-            })
           }
 
           return el('div', { style: styles.wrap }, children)
@@ -353,6 +400,13 @@
               return live.namespace
             }
 
+            // 命名空间服务键是 'remote.<namespace>'；必须走 ctx.get 或
+            // 已声明的 ctx['remote.<ns>']，不能用 ctx.remote[NS] 下标访问。
+            const SERVICE_KEY = 'remote.' + NS
+            const readNamespace = () => {
+              try { return ctx.get(SERVICE_KEY) ?? null } catch { return null }
+            }
+
             const remote = ctx.remote
             if (remote && typeof remote.$mount === 'function') {
               // $mount 返回 Promise<disposer>。effect 是同步的，此刻拿不到
@@ -362,8 +416,8 @@
               Promise.resolve(mounted).then(
                 (disposer) => {
                   disposeRef.current = typeof disposer === 'function' ? disposer : null
-                  setNamespace(remote[NS] ?? null)
-                  DIAG('remote', 'mounted')
+                  setNamespace(readNamespace())
+                  DIAG('remote', 'mounted, namespace=' + (readNamespace() ? 'ready' : 'missing'))
                 },
                 (error) => {
                   DIAG('remote', 'mount failed: ' + String((error && error.message) || error))
@@ -399,7 +453,19 @@
           }
         }
 
-        return { apply }
+        // inject 必须是 factory 返回对象的属性。
+        // 少了它，cordis 的 ctx proxy 会在访问服务时抛
+        //   cannot get property "locale" without inject
+        // ——而且是在 apply 执行期抛，整个 Web boot 因此失败。
+        // 注意：不要加 'reflect'，它是 cordis 内部对象，不在可注入服务表里，
+        // 加了会让插件卡在 pending (waiting for service: reflect)。
+        //
+        // 绝不能把 'remote.<NS>' 放进 inject：那是**本插件自己**要通过
+        // $mount 注册的命名空间，此刻还不存在。声明它会让 fiber 永远停在
+        //   pending (waiting for service: remote.skillManager)
+        // 并且把整个 web boot 拖死。正确做法是只声明 'remote'，等挂载完成
+        // 后再用 ctx.get('remote.<NS>') 现取。
+        return { inject: ['slots', 'locale', 'remote'], apply }
       },
     })
   } catch (error) {
