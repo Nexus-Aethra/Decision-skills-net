@@ -5,6 +5,11 @@
 _tmp_*
 _selftest*.mjs
 .selftest-skills/
+_*.log
+_*.out
+_*.err
+_*.mjs
+_*.cjs
 
 # Node
 node_modules/
