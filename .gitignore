@@ -3,6 +3,8 @@
 .scout-docs/
 .tmp-*
 _tmp_*
+_selftest*.mjs
+.selftest-skills/
 
 # Node
 node_modules/

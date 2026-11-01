@@ -1,0 +1,34 @@
+{
+  "name": "@local/decision-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "跨工作区与系统级的 DSH 技能管理器：浏览、开关、删除。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/",
+    "locale/",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "meta": {
+    "title": "技能管理",
+    "description": "浏览系统级与所有工作区的技能，并切换启用状态。"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "external": ["react"],
+      "inject": ["slots", "locale", "remote"]
+    }
+  },
+  "engines": { "node": ">=22" },
+  "license": "MIT"
+}

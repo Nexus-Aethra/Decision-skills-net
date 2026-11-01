@@ -1,0 +1,7 @@
+# @local/decision-skills — 技能管理器。
+#
+# 由插件管理器在 bundle 启用时挂载。行 id 与包名必须保持唯一。
+# 注意：重名的 patch 会**整体替换**该行的 config，不做深合并。
+- insert:
+    - id: decision-skills
+      name: '@local/decision-skills'

@@ -1,43 +1,73 @@
-# Decision-skills-net
+# decision-skills
 
-DSH（DeepSeek Harness）插件实验仓库：**用本机超小决策模型驱动 skill 的动态加载**。
+DSH（DeepSeek Harness）插件：**跨全部工作区与系统级的技能管理器**。
 
-决策方向不交给主模型，而是交给一个跑在本机 CPU 上的小决策模型——它判断"这一步该加载哪个 skill"，
-然后由插件在模型步骤前把该 skill 的正文注入上下文。
+在设置里新增「技能」分区，一屏看完系统级与每个工作区的 `SKILL.md`，并可开关任意技能。
 
-## 当前状态
+> 仓库根就是包根：`package.json` + `cordis.patch.yml` + `index.js` 直接在本目录，
+> 整个仓库可直接作为一个 bundle 安装。
 
-**研究阶段已完成，进入实现前准备。** 可行性结论见 [doc/feasibility-decision.md](doc/feasibility-decision.md)。
+## 功能
 
-## 核心结论（详见 doc/）
-
-- **机制可行**：`agent/pre-step` 可在模型步骤前替换该步消息批；`ctx.skills.list()/get()` 可枚举目录与取正文。
-  官方 `dsh-tool-skill` 正是用这条路径注入 skill 目录。
-- **CPU 可行**：DSH 自带 `onnxruntime.dll`/`sherpa-onnx.node`（Node-API），纯 CPU 推理有官方先例。
-- **市场有空位**：插件市场 4092 个插件中，skill 类 122 个、本地决策模型类 30 个，
-  但**"本地 CPU 小模型 + 动态加载 skill 正文"这个组合尚无人发布**。
-- **关键风险**：小模型单打 top-1 仅 62%~67%（融合确定性召回后可达 86.9%），
-  因此架构必须"召回先挡、模型只裁决边界"；平民 x86 CPU 的实测延迟仍待测。
-
-## 建议形态（MVP）
-
-```
-用户消息
-  → ① 确定性召回（BM25/词典/名字匹配，~0ms）取 Top-K
-  → ② K 小则直接注入；K 大或信号弱时才唤 CPU 小模型裁决（校准概率 + 阈值）
-  → ③ agent/pre-step 注入选中 SKILL.md 正文（而非全量目录）
-  → ④ 置信不足 / 模型不可用 → fail-open 退回官方目录行为
-  → ⑤ eval：从真实会话日志挖标注，量化 top-k recall 与假阳性
-```
-
-## 文档
-
-| 文档 | 内容 |
+| 能力 | 说明 |
 |---|---|
-| [doc/feasibility-decision.md](doc/feasibility-decision.md) | 可行性结论备忘（机制 / CPU / 市场三线交叉验证 + MVP 建议） |
-| [doc/community-findings.md](doc/community-findings.md) | GitHub 与社区同类实现查重、横向对比 |
-| [doc/market-and-api-findings.md](doc/market-and-api-findings.md) | DSH 插件市场现状与插件 API 侦察 |
+| 浏览系统级 | `~/.dsh/skills`（rank 400）、`~/.agents/skills`（rank 500） |
+| 浏览项目级 | 每个已注册工作区的 `.dsh/skills`（rank 100）与 `.agents/skills`（rank 200） |
+| 开关 | 改写 frontmatter 的 `disable-model-invocation` / `user-invocable` |
+| 预览 | 读取技能正文，设置页内联展开 |
 
-## 分支约定
+## 为什么改 frontmatter 而不是移动文件
 
-调研文档在 `docs/*` 分支积累，经评审后再合入 `main`；功能实现另开 `feat/*` 分支。
+`disable-model-invocation` 与 `user-invocable` 是**机制内的正规开关**：注册表与 `/` 菜单
+都尊重它们。改动后第一方 `write` 会触发 `fs/observed`，目录在下一个模型步骤即刷新，
+无需重启。不移动文件，项目目录结构与 git 历史保持可读。
+
+停用会同时写入两个键：
+
+```yaml
+disable-model-invocation: true   # 模型目录不出现
+user-invocable: false            # / 菜单不出现
+```
+
+启用则**移除**这两个键，回到「省略字段 = 默认允许」的官方语义。
+
+> 值必须是合规布尔字面量。写成别的值会让**整份技能被丢弃**，且只在日志留警告。
+
+## 结构
+
+```
+.
+├── package.json          # dsh.bundle.patch 声明自己是 bundle
+├── cordis.patch.yml      # insert 一行 decision-skills
+├── index.js              # Host 入口：挂 skillManager Remote 服务
+├── client.js             # 浏览器半边：设置分区
+├── lib/
+│   ├── discovery.js      # 扫描系统根与全部工作区项目根
+│   ├── mutate.js         # 开关：改写 frontmatter
+│   └── service.js        # Remote 服务：list / read / setEnabled
+└── locale/zh.json,en.json
+```
+
+## Host ↔ Client 通道
+
+外部包走不到官方的 `@deepseek-ai/dsh-typert-generator` 代码生成流水线，
+因此**手写等价描述符**（照 `@local/dsh-paper-fetch` 已验证的做法）：
+
+- **Host**：原型上写 `@dsh/typert/remote-method` 描述符，实例挂
+  `typertRemote = { service, serviceKey, namespace }`，再 `ctx.provide(ns, instance)`。
+- **Client**：`ctx.remote.$mount(TYPERT_REMOTE)`，参数 codec 必须是 `mode: 'strict'`。
+- **两处方法清单必须逐项一致**，否则症状是「端点不可达」。
+
+## 安装
+
+```
+# 通过插件管理器安装本目录
+install_bundle → 传入本仓库绝对路径
+```
+
+## 已知边界
+
+- `ctx.workspaceRegistry` 缺失时退化为「只有系统根」，不报错。
+- 工作区路径与系统根重复时（工作区恰好是 `$HOME`）按规范化路径去重。
+- 删除技能尚未实现（本次只做浏览与开关）。
+- 技能根按路径扫描，因此**未注册为工作区**的目录不会被列出。
