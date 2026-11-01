@@ -1,0 +1,22 @@
+# DSH / 本地临时产物
+.dsh-src/
+.scout-docs/
+.tmp-*
+_tmp_*
+
+# Node
+node_modules/
+dist/
+*.log
+
+# 本地环境
+.env
+.env.local
+.DS_Store
+Thumbs.db
+
+# 模型权重（体积大，不入库；用下载脚本 + sha256 校验）
+models/
+*.onnx
+*.gguf
+*.safetensors
