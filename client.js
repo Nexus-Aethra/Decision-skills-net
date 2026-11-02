@@ -3,13 +3,11 @@
  *
  * 模块契约（照 @local/dsh-paper-fetch 已验证的写法）：
  *   window.__ModuleLoader__.load({ id, factory(require) { return { inject, apply } } })
- * React 只能从 factory 的 require('react') 拿。
  *
  * 硬约束：
  * - 不 import 任何 Harness Client 包；只借 --dsw-alias-* 主题变量。
  * - 顶层必须有 window 守卫：宿主 boot 审计只报 "failed"，不给原因。
- * - inject 必须是 factory 返回对象的属性，且**不能**声明自己要注册的
- *   'remote.<ns>'（会永远 pending）。
+ * - inject 是 factory 返回对象的属性，且不能声明自己要注册的 'remote.<ns>'。
  */
 ;(function () {
   const DIAG = (phase, detail) => {
@@ -43,16 +41,14 @@
         const SLOT = 'settings.section'
         const PASS_THROUGH = () => ({ parse: (value) => value })
 
-        /**
-         * 方法 -> wire 参数名。必须与宿主方法实参逐个对应：
-         * 网关拿 descriptor.parameters 校验 args 字段集合，多一个就
-         * 报 gateway/arguments-invalid。
-         */
+        /** 方法 -> wire 参数名，必须与宿主实参逐个对应。 */
         const METHOD_PARAMS = {
           list: [],
           listForSession: ['request'],
           read: ['request'],
           setEnabled: ['request'],
+          removeSkill: ['request'],
+          purgeTrashDir: ['request'],
         }
         const REMOTE_METHODS = Object.keys(METHOD_PARAMS)
 
@@ -65,16 +61,13 @@
             method,
             invocation: { kind: 'direct' },
             parameters: METHOD_PARAMS[method].map((name) => ({
-              name,
-              wire: name,
-              source: 'json',
+              name, wire: name, source: 'json',
               codec: {
                 mode: 'strict',
                 typeSymbol: MODULE_ID + '#' + NS + '/' + method + ':' + name,
                 create: PASS_THROUGH,
               },
             })),
-            // result 不能省：网关 invoke() 直接读 descriptor.result.mode。
             result: {
               mode: 'strict',
               typeSymbol: MODULE_ID + '#' + NS + '/' + method + ':result',
@@ -84,43 +77,56 @@
         }
 
         const zh = {
-          meta: { title: '技能管理', description: '浏览内置、系统级与各工作区的技能，并切换启用状态。' },
+          meta: { title: '技能管理', description: '浏览内置、系统级与各工作区的技能，支持按会话查看、开关与删除。' },
           nav: '技能', title: '技能管理',
           subtitle: '内置、系统级与各工作区的 SKILL.md',
           refresh: '刷新', search: '搜索技能',
           filterAll: '全部', filterEnabled: '已启用', filterDisabled: '已关闭',
           scopeBundled: '内置', scopeSystem: '系统级', scopeProject: '工作区',
           countSkills: '个技能', countEnabled: '已启用', countDisabled: '已关闭',
+          viewAll: '全部会话', viewSession: '按会话',
+          sessionPicker: '选择会话',
+          noSessions: '还没有会话',
+          scopedHint: '当前按会话隔离：只显示该会话作用域内的技能',
+          unscopedHint: '当前为全局视角：汇总所有工作区',
           empty: '还没有发现技能。在 <工作区>/.agents/skills/<名字>/SKILL.md 新建即可。',
           emptyFiltered: '没有符合条件的技能。',
           loading: '正在读取…', error: '读取失败', retry: '重试',
           preview: '预览', collapse: '收起',
           noDescription: '（没有描述）',
           bundledHint: '内置技能随宿主发布，不可修改',
+          remove: '删除', removeConfirm: '确认删除？', removeCancel: '取消',
+          removeHint: '移到技能根下的 .trash/<时间戳>/，可手动恢复',
+          removed: '已移到回收目录',
+          removeFailed: '删除失败',
           unreachable: '端点不可达',
-          scoped: '当前会话', global: '全部',
-          sessionHint: '按会话隔离后，每个会话只看到自己作用域内的技能',
         }
         const en = {
-          meta: { title: 'Skill Manager', description: 'Browse bundled, system and workspace skills, and toggle them.' },
+          meta: { title: 'Skill Manager', description: 'Browse bundled, system and workspace skills with per-session view, toggling and removal.' },
           nav: 'Skills', title: 'Skill Manager',
           subtitle: 'SKILL.md across bundled, system and workspace roots',
           refresh: 'Refresh', search: 'Search skills',
           filterAll: 'All', filterEnabled: 'Enabled', filterDisabled: 'Disabled',
           scopeBundled: 'Bundled', scopeSystem: 'System', scopeProject: 'Workspace',
           countSkills: 'skills', countEnabled: 'enabled', countDisabled: 'disabled',
+          viewAll: 'All sessions', viewSession: 'By session',
+          sessionPicker: 'Pick a session',
+          noSessions: 'No sessions yet',
+          scopedHint: 'Scoped to one session: only skills visible in that scope',
+          unscopedHint: 'Global view: every workspace combined',
           empty: 'No skills found yet. Create one at <workspace>/.agents/skills/<name>/SKILL.md.',
           emptyFiltered: 'No skills match the filters.',
           loading: 'Loading…', error: 'Failed to load', retry: 'Retry',
           preview: 'Preview', collapse: 'Collapse',
           noDescription: '(no description)',
           bundledHint: 'Bundled skills ship with the host and are read-only',
+          remove: 'Remove', removeConfirm: 'Confirm removal?', removeCancel: 'Cancel',
+          removeHint: 'Moves to .trash/<timestamp>/ under the skill root, recoverable',
+          removed: 'Moved to trash',
+          removeFailed: 'Removal failed',
           unreachable: 'Endpoint unreachable',
-          scoped: 'This session', global: 'All',
-          sessionHint: 'Scope the catalog to one session to give every session its own skill context',
         }
 
-        /** 圆润、克制的视觉：大圆角 + 柔和分隔 + 明确的信息层级。 */
         const S = {
           wrap: { display: 'flex', flexDirection: 'column', gap: 16, width: '100%', maxWidth: 720 },
           head: { display: 'flex', flexDirection: 'column', gap: 4 },
@@ -144,17 +150,27 @@
           },
           segBtn: (on) => ({
             height: 26, padding: '0 11px', fontSize: 12, cursor: 'pointer',
-            border: 'none', borderRadius: 7, background: on ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+            border: 'none', borderRadius: 7,
+            background: on ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
             color: on ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
             boxShadow: on ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
             transition: 'background 120ms ease, color 120ms ease',
           }),
-          ghost: {
-            height: 34, padding: '0 13px', fontSize: 12.5, cursor: 'pointer',
+          ghost: (disabled) => ({
+            height: 34, padding: '0 13px', fontSize: 12.5,
+            cursor: disabled ? 'not-allowed' : 'pointer',
             color: 'var(--dsw-alias-label-secondary)',
             background: 'transparent',
             border: '1px solid var(--dsw-alias-border-l1)',
-            borderRadius: 10, transition: 'background 120ms ease',
+            borderRadius: 10, opacity: disabled ? .5 : 1,
+            transition: 'background 120ms ease',
+          }),
+          select: {
+            height: 34, padding: '0 10px', fontSize: 12.5, cursor: 'pointer',
+            color: 'var(--dsw-alias-label-primary)',
+            background: 'var(--dsw-alias-bg-layer-1)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            borderRadius: 10, outline: 'none', maxWidth: 220,
           },
 
           stats: { display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' },
@@ -162,6 +178,13 @@
           statNum: { fontSize: 13, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
           statLabel: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
           dot: { width: 3, height: 3, borderRadius: '50%', background: 'var(--dsw-alias-border-l3)' },
+
+          hint: {
+            fontSize: 12, lineHeight: 1.55, color: 'var(--dsw-alias-label-tertiary)',
+            padding: '8px 12px', borderRadius: 10,
+            background: 'var(--dsw-alias-bg-layer-1)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+          },
 
           group: { display: 'flex', flexDirection: 'column', gap: 8 },
           groupHead: {
@@ -201,14 +224,14 @@
             fontSize: 11, lineHeight: 1.4, color: 'var(--dsw-alias-label-tertiary)',
             wordBreak: 'break-all', opacity: .85,
           },
-          actions: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 },
-          tagBtn: {
+          actions: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' },
+          tagBtn: (danger) => ({
             height: 24, padding: '0 10px', fontSize: 11.5, cursor: 'pointer',
-            color: 'var(--dsw-alias-label-secondary)',
+            color: danger ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-secondary)',
             background: 'transparent',
-            border: '1px solid var(--dsw-alias-border-l1)',
-            borderRadius: 8,
-          },
+            border: '1px solid ' + (danger ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-border-l1)'),
+            borderRadius: 8, transition: 'background 120ms ease',
+          }),
           preview: {
             marginTop: 2, padding: '12px 14px', borderRadius: 12, maxHeight: 260, overflow: 'auto',
             background: 'var(--dsw-alias-bg-layer-2)',
@@ -247,18 +270,28 @@
         const el = (tag, props, children) => React.createElement(tag, props, children)
 
         function Switch({ on, busy, disabled, onToggle, label }) {
-          const blocked = busy || disabled
           return el('button', {
             type: 'button', role: 'switch', 'aria-checked': on, 'aria-label': label,
             'aria-disabled': disabled ? 'true' : 'false',
-            disabled: blocked, onClick: onToggle,
-            title: disabled ? undefined : undefined,
+            disabled: busy || disabled, onClick: onToggle,
             style: S.switchTrack(on, disabled),
           }, el('span', { style: S.switchKnob(on) }))
         }
 
-        function SkillCard({ skill, t, busy, onToggle, onPreview }) {
+        function SkillCard({ skill, t, busy, confirming, onToggle, onPreview, onAskRemove, onCancelRemove, onConfirmRemove }) {
           const readOnly = skill.editable === false
+          const actions = [
+            el('button', { key: 'pv', type: 'button', style: S.tagBtn(false), onClick: onPreview },
+              skill.previewOpen ? t('collapse') : t('preview')),
+          ]
+          if (!readOnly) {
+            if (confirming) {
+              actions.push(el('button', { key: 'yes', type: 'button', style: S.tagBtn(true), onClick: onConfirmRemove }, t('removeConfirm')))
+              actions.push(el('button', { key: 'no', type: 'button', style: S.tagBtn(false), onClick: onCancelRemove }, t('removeCancel')))
+            } else {
+              actions.push(el('button', { key: 'rm', type: 'button', style: S.tagBtn(true), onClick: onAskRemove }, t('remove')))
+            }
+          }
           return el('div', { style: S.card(readOnly) }, [
             el('div', { key: 'm', style: S.cardMain }, [
               el('div', { key: 'n', style: S.nameRow }, [
@@ -268,19 +301,13 @@
               ]),
               el('div', { key: 'd', style: S.desc }, skill.description || t('noDescription')),
               skill.path ? el('div', { key: 'p', style: S.path }, skill.path) : null,
-              el('div', { key: 'a', style: S.actions }, [
-                el('button', {
-                  key: 'pv', type: 'button', style: S.tagBtn, onClick: onPreview,
-                }, skill.previewOpen ? t('collapse') : t('preview')),
-              ]),
+              el('div', { key: 'a', style: S.actions }, actions),
+              confirming ? el('div', { key: 'rh', style: S.path }, t('removeHint')) : null,
               skill.previewOpen
                 ? el('div', { key: 'pv2', style: S.preview }, skill.previewText ?? t('loading'))
                 : null,
             ]),
-            el(Switch, {
-              key: 'sw', on: skill.enabled, busy, disabled: readOnly,
-              onToggle, label: skill.name,
-            }),
+            el(Switch, { key: 'sw', on: skill.enabled, busy, disabled: readOnly, onToggle, label: skill.name }),
           ])
         }
 
@@ -289,16 +316,17 @@
           const [state, setState] = useState({ status: 'loading', data: null, error: null })
           const [query, setQuery] = useState('')
           const [filter, setFilter] = useState('all')
-          const [scoped, setScoped] = useState(false)
+          const [sessionId, setSessionId] = useState('')
           const [busy, setBusy] = useState({})
           const [preview, setPreview] = useState({})
+          const [confirming, setConfirming] = useState({})
+          const [notice, setNotice] = useState(null)
 
           const call = async (method, request) => {
             const ns = props.namespace
             if (!ns || typeof ns[method] !== 'function') {
               throw new Error(t('unreachable') + ': ' + NS + '/' + method)
             }
-            // 参数个数必须与描述符一致：无名方法传 {} 会被判 arguments-invalid。
             const envelope = request === undefined ? await ns[method]() : await ns[method](request)
             if (envelope && typeof envelope === 'object' && 'ok' in envelope) {
               if (!envelope.ok) {
@@ -310,12 +338,12 @@
             return envelope
           }
 
-          const load = async (useScope) => {
-            setState({ status: 'loading', data: null, error: null })
+          const load = async (sid) => {
+            setState((prev) => ({ status: 'loading', data: prev.data, error: null }))
             try {
-              const wantScope = useScope ?? scoped
-              const data = wantScope && props.sessionId
-                ? await call('listForSession', { sessionId: props.sessionId })
+              const wanted = sid ?? sessionId
+              const data = wanted !== '' && wanted != null
+                ? await call('listForSession', { sessionId: wanted })
                 : await call('list')
               setState({ status: 'ready', data, error: null })
             } catch (error) {
@@ -323,7 +351,7 @@
             }
           }
 
-          useEffect(() => { void load(false) }, [])
+          useEffect(() => { void load('') }, [])
 
           const keyOf = (s) => s.path || s.name
 
@@ -337,6 +365,24 @@
             } catch (error) {
               DIAG('setEnabled', String((error && error.message) || error))
             }
+            setBusy((prev) => ({ ...prev, [key]: false }))
+            await load()
+          }
+
+          const removeSkill = async (skill) => {
+            const key = keyOf(skill)
+            setBusy((prev) => ({ ...prev, [key]: true }))
+            try {
+              const outcome = await call('removeSkill', { path: skill.path, name: skill.name })
+              if (outcome && outcome.ok === false) {
+                setNotice({ kind: 'error', text: t('removeFailed') + ': ' + String(outcome.error) })
+              } else {
+                setNotice({ kind: 'ok', text: t('removed') + (outcome?.movedTo ? ' → ' + outcome.movedTo : '') })
+              }
+            } catch (error) {
+              setNotice({ kind: 'error', text: t('removeFailed') + ': ' + String((error && error.message) || error) })
+            }
+            setConfirming((prev) => ({ ...prev, [key]: false }))
             setBusy((prev) => ({ ...prev, [key]: false }))
             await load()
           }
@@ -356,23 +402,37 @@
             }
           }
 
+          const changeSession = (value) => {
+            setSessionId(value)
+            setPreview({})
+            setConfirming({})
+            setNotice(null)
+            void load(value)
+          }
+
           const view = useMemo(() => {
             if (!state.data) return null
             const q = query.trim().toLowerCase()
-            const keyOfRow = (s) => s.path || s.name
             const all = state.data.skills
               .filter((s) => (filter === 'all' ? true : filter === 'enabled' ? s.enabled : !s.enabled))
               .filter((s) => q === '' || s.name.toLowerCase().includes(q)
                 || String(s.description || '').toLowerCase().includes(q))
-              .map((s) => (preview[keyOfRow(s)]
-                ? { ...s, previewOpen: preview[keyOfRow(s)].open, previewText: preview[keyOfRow(s)].text }
-                : s))
+              .map((s) => {
+                const k = keyOf(s)
+                const patch = {}
+                if (preview[k]) { patch.previewOpen = preview[k].open; patch.previewText = preview[k].text }
+                if (confirming[k]) patch.confirming = true
+                return { ...s, ...patch }
+              })
             const groups = { bundled: [], system: [], project: [] }
             for (const s of all) (groups[s.scope] ?? groups.system).push(s)
             const total = state.data.skills.length
             const enabled = state.data.skills.filter((s) => s.enabled).length
             return { groups, shown: all.length, total, enabled, disabled: total - enabled }
-          }, [state, query, filter, preview])
+          }, [state, query, filter, preview, confirming])
+
+          const sessions = (state.data && state.data.sessions) ?? []
+          const scoped = sessionId !== ''
 
           const children = [
             el('div', { key: 'h', style: S.head }, [
@@ -386,27 +446,46 @@
               }),
               el('div', { key: 'seg', style: S.segment },
                 ['all', 'enabled', 'disabled'].map((key) => el('button', {
-                  key, type: 'button',
-                  style: S.segBtn(filter === key),
+                  key, type: 'button', style: S.segBtn(filter === key),
                   onClick: () => setFilter(key),
                 }, t(key === 'all' ? 'filterAll' : key === 'enabled' ? 'filterEnabled' : 'filterDisabled')))),
               el('button', {
-                key: 'r', type: 'button', style: S.ghost, onClick: () => void load(),
+                key: 'r', type: 'button', style: S.ghost(false), onClick: () => void load(),
               }, t('refresh')),
+            ]),
+            el('div', { key: 'sb', style: S.toolbar }, [
+              el('span', { key: 'l', style: S.statLabel }, t('viewAll') + ' / ' + t('viewSession') + '：'),
+              el('select', {
+                key: 'sel', style: S.select, value: sessionId,
+                onChange: (event) => changeSession(event.target.value),
+              }, [
+                el('option', { key: 'all', value: '' }, t('viewAll') + '（' + t('unscopedHint') + '）'),
+                ...sessions.map((s) => el('option', { key: s.id, value: s.id },
+                  String(s.title || s.id).slice(0, 60))),
+              ]),
+              scoped ? el('span', { key: 'h', style: S.statLabel }, t('scopedHint')) : null,
             ]),
           ]
 
-          if (state.status === 'loading') children.push(el('div', { key: 'ld', style: S.muted }, t('loading')))
+          if (notice) {
+            children.push(el('div', { key: 'nt', style: S.panel }, [
+              el('div', { key: 'x', style: S.panelText }, notice.text),
+            ]))
+          }
+
+          if (state.status === 'loading' && !state.data) {
+            children.push(el('div', { key: 'ld', style: S.muted }, t('loading')))
+          }
           if (state.status === 'error') {
             children.push(el('div', { key: 'er', style: S.panel }, [
               el('div', { key: 't', style: S.panelText }, t('error') + ': ' + state.error),
               el('div', { key: 'a' }, el('button', {
-                type: 'button', style: S.ghost, onClick: () => void load(),
+                type: 'button', style: S.ghost(false), onClick: () => void load(),
               }, t('retry'))),
             ]))
           }
 
-          if (state.status === 'ready' && view) {
+          if (view) {
             children.push(el('div', { key: 'st', style: S.stats }, [
               el('span', { key: 'a', style: S.stat }, [
                 el('span', { key: '1', style: S.statNum }, String(view.total)),
@@ -437,16 +516,24 @@
             for (const [bucket, labelKey] of BUCKETS) {
               const items = view.groups[bucket]
               if (!items || items.length === 0) continue
-              const keyOfRow = (s) => s.path || s.name
               children.push(el('div', { key: 'g-' + bucket, style: S.group }, [
                 el('div', { key: 'gh', style: S.groupHead }, [
                   el('span', { key: 'l' }, t(labelKey)),
                   el('span', { key: 'c', style: S.groupCount }, String(items.length)),
                 ]),
-                ...items.map((skill) => el(SkillCard, {
-                  key: keyOfRow(skill), skill, t, busy: Boolean(busy[keyOfRow(skill)]),
-                  onToggle: () => void toggle(skill), onPreview: () => void openPreview(skill),
-                })),
+                ...items.map((skill) => {
+                  const k = keyOf(skill)
+                  return el(SkillCard, {
+                    key: k, skill, t,
+                    busy: Boolean(busy[k]),
+                    confirming: Boolean(confirming[k]),
+                    onToggle: () => void toggle(skill),
+                    onPreview: () => void openPreview(skill),
+                    onAskRemove: () => { setConfirming((p) => ({ ...p, [k]: true })); setNotice(null) },
+                    onCancelRemove: () => setConfirming((p) => ({ ...p, [k]: false })),
+                    onConfirmRemove: () => void removeSkill(skill),
+                  })
+                }),
               ]))
             }
           }
@@ -459,8 +546,7 @@
             ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'decision-skills: locales')
             const t = ctx.locale.bind(LOCALE_NS)
 
-            // 命名空间是异步到位的：用订阅驱动重渲染。
-            const live = { namespace: null, sessionId: null }
+            const live = { namespace: null }
             const listeners = new Set()
             const publish = (patch) => {
               Object.assign(live, patch)
@@ -506,12 +592,7 @@
 
             const Section = (props) => {
               const liveState = useLive()
-              return el(SkillManagerSection, {
-                ...props,
-                t,
-                namespace: liveState.namespace,
-                sessionId: liveState.sessionId,
-              })
+              return el(SkillManagerSection, { ...props, t, namespace: liveState.namespace })
             }
 
             ctx.slots.inject(SLOT, () => ctx.slots.register({
@@ -528,7 +609,6 @@
           }
         }
 
-        // inject 必须是 factory 返回对象的属性。不要声明 'remote.<ns>'。
         return { inject: ['slots', 'locale', 'remote'], apply }
       },
     })
