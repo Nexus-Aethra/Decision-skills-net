@@ -6,16 +6,22 @@
 #   api      提供 skillManager Remote（依赖前两个）
 #   ui       设置界面，宿主侧为空，dsh.client 指向 browser 半边
 #
+# name 用**相对路径**（./packages/xxx/index.js）：DSH 的 patch 解析器会把
+# 以 ./ 开头的 name 锚定到本 patch 文件所在目录再转成 file URL
+# （见 app-boot 的 anchorInsertedPluginNames）。
+# 这样就不必为每个子包在 profile 的 node_modules 里手工建 junction——
+# 之前桌面端就是因为缺链接，子包根本没被解析出来。
+#
 # 注意：重名的 patch 会**整体替换**该行的 config，不做深合并。
 - insert:
     - id: decision-skills-scanner
-      name: '@local/decision-skills-scanner'
+      name: './packages/scanner/index.js'
 
     - id: decision-skills-store
-      name: '@local/decision-skills-store'
+      name: './packages/store/index.js'
 
     - id: decision-skills-api
-      name: '@local/decision-skills-api'
+      name: './packages/api/index.js'
 
     - id: decision-skills-ui
-      name: '@local/decision-skills-ui'
+      name: './packages/ui/index.js'

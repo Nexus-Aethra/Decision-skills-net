@@ -1,6 +1,6 @@
 ---
 name: dsh-plugin-debugging
-description: Use when a DeepSeek Harness plugin crashes the Web boot, shows "entry did not activate", fails to mount its Remote namespace, or renders nothing in a slot. Covers the exact failure chain and how to verify in a dshbox container before touching a live profile.
+description: Use when a DeepSeek Harness plugin crashes the Web boot, shows "entry did not activate", fails to mount its Remote namespace, renders nothing in a slot, or takes the whole host down with a JavaScript heap out-of-memory abort (exit code 134). Covers the exact failure chain, the provider-recursion OOM, and how to verify in a dshbox container before touching a live profile.
 ---
 
 # DSH 插件调试
@@ -130,6 +130,71 @@ const ref = { current: null }
 Promise.resolve(mounted).then(d => { ref.current = typeof d === 'function' ? d : null })
 ctx.effect(() => () => { ref.current?.(); ref.current = null })
 ```
+
+## 铁律三：provider 回调里绝不能回头调注册表
+
+**这一条会直接把宿主进程撑爆，不是"报错"，是"崩溃"。**
+
+DSH 的技能注册表（`@deepseek-ai/dsh-skill`）调用链是：
+
+```
+collect()  →  collectFresh()  →  listLayerCandidates()  →  provider.list()
+```
+
+所以 `provider.list()` **是被注册表调用的**。若你在里面回调
+`ctx.skills.snapshot()`，就形成无限递归：
+
+```
+collect → provider.list() → snapshot → collect → provider.list() → …
+```
+
+后果链条（实测，每一步都在崩溃日志里）：
+
+1. `RangeError: Maximum call stack size exceeded`
+   —— 栈帧落在 `dsh-skill/lib/index.js` 的 `while (true)`（collect 的重试循环）。
+   **看日志时别被这行带偏**：它是递归的**受害者**，不是元凶。
+2. 每次爆栈留下一串未处理的 promise 拒绝
+   （日志里满屏 `Exception in PromiseRejectCallback`）
+3. 这些拒绝对象堆积 → 宿主进程堆涨到 4GB →
+   `FATAL ERROR: MarkCompactCollector: young object promotion failed
+   Allocation failed - JavaScript heap out of memory`
+4. 进程 abort，退出码 **134**，整个桌面端跟着崩。
+
+**判据**：注册表里注册的 provider，其 `list()` 只能读**不经过注册表**的来源。
+需要完整目录时，拆成两个方法——一个走注册表（给 UI 用），
+一个不走（给 provider 用）。
+
+```js
+// 错：provider.list() 里回头调注册表 → 爆栈 → OOM 崩溃
+collect: () => scanner.catalog(undefined).then((c) => c.skills)
+
+// 对：provider 只读不走注册表的来源
+collect: () => scanner.systemRows()   // 只扫 extraRoots() + asar
+```
+
+同理，provider 的 `get()` 也不能回调注册表的 `get()`。
+
+### 崩溃日志在哪读
+
+桌面端：`%APPDATA%\\@deepseek-ai\\dsh-desktop\\logs\\crash-<时间>-host.log`。
+文件名里的时间是 **UTC**，比本地时间晚 8 小时（`12:31Z` = 本地 20:31）。
+
+日志分三段：`--- error ---`（宿主异常）、GC 统计（`---` 分隔的重复块）、
+`--- renderer console (error level) ---`（渲染进程 console）。
+**判崩溃类型看第一段**；中间那堆 GC 行是 OOM 的结果，不是原因。
+
+### 崩溃后 dshbox daemon 也会死
+
+dshbox 的守护进程跑在桌面进程树里。宿主 OOM 之后，
+`dshbox` 命令会报：
+
+```
+dshbox is not running … The discovery record at …\\discovery.json is stale
+```
+
+这不是 dshbox 坏了，是宿主带走了它。**让用户重新拉起桌面端**，
+不要试图自己去修 discovery.json。
+
 
 ## 铁律二：先找系统已有的服务，再考虑自己实现
 

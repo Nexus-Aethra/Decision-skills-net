@@ -24,7 +24,7 @@ export const VISIBILITY_PROVIDER = 'decision-skills-visibility'
  * 构造一个只暴露「已开启」内嵌技能的 provider。
  *
  * @param {object} deps
- * @param {() => Promise<Array>} deps.collect 采集全部技能行
+ * @param {() => Promise<Array>} deps.collect 采集系统级技能行（**不得回调注册表**）
  * @param {(innerPath: string) => Promise<string|null>} deps.readBody 读 asar 正文
  * @returns {object} SkillProvider
  */
@@ -33,6 +33,10 @@ export function createVisibilityProvider({ collect, readBody }) {
     name: VISIBILITY_PROVIDER,
 
     async list() {
+      // ⚠️ collect 只能返回**不经过注册表**的行（scanner.systemRows()）。
+      // provider.list() 是被注册表 collect() 调用的；这里若再回调 ctx.skills.snapshot()，
+      // 会形成 collect → provider.list() → snapshot → collect 的无限递归，
+      // 表现为爆栈后 host 进程 OOM 崩溃（退出码 134）。详见 scanner/index.js 的 systemRows()。
       const rows = await collect()
       const prefs = await loadPrefs()
       const out = []

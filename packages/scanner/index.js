@@ -355,6 +355,39 @@ export class SkillScanner {
   }
 
   /**
+   * 只扫**不经过注册表**的系统级来源：安装自带目录 + asar 内置技能。
+   *
+   * 为什么单独开一个方法：给 visibility provider 用。
+   *
+   * provider 的 list() 是**被注册表调用**的（collect → collectFresh → provider.list()）。
+   * 若 list() 里再回调 ctx.skills.snapshot()，就形成
+   *     collect → provider.list() → snapshot → collect → provider.list() → …
+   * 的无限递归：爆栈（RangeError: Maximum call stack size exceeded），
+   * 每次爆栈都留下一串未处理的 promise 拒绝，最后把 host 进程撑到 OOM
+   * （FATAL ERROR: … JavaScript heap out of memory，进程 abort，退出码 134）。
+   *
+   * 所以 provider 侧只能读**不经过注册表**的来源。
+   * 这不丢东西：scope === 'system' 的行（source === 'bundled'）本来就只有两个出处
+   * ——extraRoots() 扫的安装目录，和 scanArchiveSkills() 扫的 asar 内置技能。
+   * 官方 filesystem provider 的 bundled 根（bundledSkillDir）在本机并未配置，
+   * 那条路上本来就没有行。
+   *
+   * @returns {Promise<Array>} 系统级技能行
+   */
+  async systemRows() {
+    const byKey = new Map()
+    const add = (row) => {
+      const key = row.name + '\u0000' + (row.path ?? row.archivePath ?? '')
+      if (!byKey.has(key)) byKey.set(key, row)
+    }
+    for (const root of this.extraRoots()) {
+      for (const row of await this.scanDirectoryRoot(root)) add(row)
+    }
+    for (const row of await this.scanArchiveSkills()) add(row)
+    return sortRows([...byKey.values()])
+  }
+
+  /**
    * 完整目录：注册表 + 项目根 + 安装目录 + asar。
    * @param agent 会话作用域，省略则只读全局与各工作区
    */
@@ -494,9 +527,14 @@ export function apply(ctx) {
 
   // 可见度桥接：让「已开启」的内嵌技能对 agent 可见。
   // 注册失败（例如注册表尚未就绪）不应拖垮整个插件。
+  //
+  // collect 必须走 systemRows() 而不是 catalog()：
+  // provider.list() 是被注册表 collect() 调用的，回调 catalog()（内含 skills.snapshot()）
+  // 会构成无限递归 —— collect → provider.list() → snapshot → collect → …，
+  // 最终爆栈并把 host 进程撑到 OOM（退出码 134）。
   try {
     const uninstall = installVisibility(ctx, {
-      collect: () => scanner.catalog(undefined).then((c) => c.skills),
+      collect: () => scanner.systemRows(),
       readBody: (innerPath) => {
         const archive = scanner.asarPath()
         return archive === null ? Promise.resolve(null) : readAsarFile(archive, innerPath)

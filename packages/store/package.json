@@ -8,6 +8,8 @@
     ".": "./index.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js"],
+  "files": [
+    "index.js"
+  ],
   "license": "MIT"
 }

@@ -8,6 +8,12 @@
     ".": "./index.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js"],
+  "files": [
+    "index.js",
+    "prefs.js",
+    "visibility.js",
+    "notifier.js",
+    "asar.js"
+  ],
   "license": "MIT"
 }

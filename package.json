@@ -1,6 +1,6 @@
 {
   "name": "@local/decision-skills",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "技能管理器整合包：采集、写入、Remote 面、设置界面四个子插件。",
@@ -19,8 +19,12 @@
     "description": "浏览内置、系统级与各工作区的技能，支持按会话查看、开关与删除。"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "license": "MIT"
 }
