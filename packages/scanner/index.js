@@ -14,7 +14,7 @@
  *
  * 未来决策层要接的正是这里：它只需要消费 catalog()，不必关心来源。
  */
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,34 +90,66 @@ export class SkillScanner {
     return out
   }
 
-  /** 列出会话（磁盘优先，服务回退）。 */
+  /**
+   * 列出会话。
+   *
+   * **不自己算：直接问系统的会话服务。**
+   * DSH 的侧边栏由 `sessionController` 驱动，它的 `list()` 已经做完：
+   *   - 可见性（remoteAccess.allows）
+   *   - cwd 过滤
+   *   - blank 过滤（没有消息的空会话）
+   *
+   * 早期版本自己扫目录、自己写体积阈值，结果是"容器里 1 个会话显示成 7 个"——
+   * 因为把 zstd 头只有几百字节的空壳也算进去了。那是重复实现别人已有的逻辑。
+   *
+   * 两层回退只在服务缺失时使用（非 GUI 部署）。
+   */
   async listSessions() {
-    const fromDisk = await this.scanSessionDirs()
-    if (fromDisk.length > 0) return fromDisk
+    this.lastSessionDiag = { source: 'none' }
+
+    // 1) 官方会话控制器 —— 唯一权威来源，与侧边栏完全一致
     try {
-      const query = this.ctx.get('sessionQuery')
-      if (query && typeof query.listSessions === 'function') {
-        let records
-        try { records = await query.listSessions() } catch { records = await query.listSessions(undefined) }
-        if (Array.isArray(records) && records.length > 0) {
-          return records
-            .map((r) => ({ id: String(r.id ?? r.sessionId ?? ''), title: String(r.title ?? r.name ?? r.id ?? '') }))
+      const controller = this.ctx.get('sessionController')
+      if (controller !== undefined) {
+        let value
+        try {
+          // 签名是 (request, signal)。JSON-RPC 语义下 request 可为空对象，
+          // 直接调时 signal 可省略。
+          value = await controller.list?.({})
+          if (value === undefined) value = await controller.list?.()
+        } catch {
+          value = undefined
+        }
+        const items = value?.items ?? (Array.isArray(value) ? value : undefined)
+        if (Array.isArray(items)) {
+          this.lastSessionDiag = { source: 'sessionController', counts: { total: items.length } }
+          return items
+            .map((item) => ({
+              id: String(item.sessionId ?? item.id ?? ''),
+              title: String(item.title ?? item.sessionId ?? item.id ?? ''),
+              updatedAt: item.updatedAt ?? null,
+            }))
             .filter((r) => r.id !== '')
-            .slice(0, 200)
         }
       }
     } catch { /* 无该服务 */ }
+
+    // 2) 存活会话（精简部署）
     try {
       const sessions = this.ctx.get('sessions')
-      const items = sessions?.list?.() ?? []
-      if (items.length > 0) {
+      const items = typeof sessions?.list === 'function' ? sessions.list() : undefined
+      if (Array.isArray(items) && items.length > 0) {
+        this.lastSessionDiag = { source: 'sessions', counts: { total: items.length } }
         return items
-          .map((item) => ({ id: String(item?.id ?? item ?? ''), title: String(item?.title ?? item?.id ?? '') }))
+          .map((item) => ({ id: String(item?.id ?? item ?? ''), title: String(item?.title ?? item?.id ?? ''), updatedAt: null }))
           .filter((r) => r.id !== '')
-          .slice(0, 200)
       }
     } catch { /* 继续 */ }
-    return []
+
+    // 3) 磁盘兜底：只能靠体积判断空壳，不如上面的服务准
+    const disk = await this.scanSessionDirs()
+    this.lastSessionDiag = { source: 'disk', counts: { total: disk.length } }
+    return disk
   }
 
   /**
@@ -138,12 +170,42 @@ export class SkillScanner {
         for (const s of sessions) {
           if (!s.isDirectory() || !s.name.startsWith('session-')) continue
           if (seen.has(s.name)) continue
+          // 空会话过滤：zstd 头只有几百字节，真实会话至少几十 KB。
+          // 实测空壳 319~401 字节，正常会话 400KB~4MB。
+          // 不滤会把"没发过消息的会话"算进去，与侧边栏对不上。
+          const size = await this.sessionBytes(join(root, group.name, s.name))
+          if (this.lastSessionDiag) {
+            this.lastSessionDiag.sizes = this.lastSessionDiag.sizes ?? []
+            this.lastSessionDiag.sizes.push({ id: s.name.slice(0, 24), size })
+          }
+          if (size >= 0 && size < 4096) continue
           seen.add(s.name)
           out.push({ id: s.name, title: s.name, workspace: group.name })
         }
       }
     }
     return out.slice(0, 200)
+  }
+
+  /**
+   * 会话目录的总字节数；读不到返回 -1（视为未知，不因此丢弃）。
+   * @param {string} dir
+   */
+  async sessionBytes(dir) {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true })
+      let total = 0
+      for (const entry of entries) {
+        if (!entry.isFile()) continue
+        try {
+          const stat = await stat(join(dir, entry.name))
+          total += stat.size
+        } catch { /* 单个文件失败不影响 */ }
+      }
+      return total
+    } catch {
+      return -1
+    }
   }
 
   /** 会话目录候选（去重、只保留存在的）。 */
