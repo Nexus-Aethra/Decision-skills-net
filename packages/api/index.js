@@ -31,6 +31,7 @@ export const METHOD_PARAMS = {
   read: ['request'],
   setEnabled: ['request'],
   removeSkill: ['request'],
+  setVisibility: ['request'],
 }
 
 /** 服务实现。 */
@@ -94,6 +95,20 @@ export class SkillManagerRemote {
    *  网关会判 "conflicts with its namespace service" 并拒绝整次挂载。 */
   async removeSkill(request) {
     return this.store.remove({ path: request?.path, name: request?.name })
+  }
+
+  /**
+   * 设置「对 agent 可见」。
+   * 这是系统级技能唯一的可操作项——实体在内嵌资源里，改不了文件。
+   */
+  async setVisibility(request) {
+    return this.store.setVisibility({
+      key: request?.key,
+      name: request?.name,
+      path: request?.path,
+      archivePath: request?.archivePath,
+      mode: request?.mode,
+    })
   }
 }
 

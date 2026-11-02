@@ -19,6 +19,10 @@ import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeRow, sortRows, EVENTS, SERVICES, SCOPE } from '../shared/index.js'
+import { loadPrefs, prefKey } from './prefs.js'
+import { installVisibility } from './visibility.js'
+import { installChangeNotifier } from './notifier.js'
+import { readAsarFile } from './asar.js'
 
 /** 极简 frontmatter 解析：只取标量字段，够展示与开关判断。 */
 export function parseFrontmatter(text) {
@@ -408,7 +412,30 @@ export class SkillScanner {
     }
     for (const row of await this.scanArchiveSkills()) add(row)
 
-    return { skills: sortRows([...byKey.values()]), complete }
+    // 叠加「对 agent 可见」的状态。
+    // 内嵌技能实体在 asar/assets 内不可写，只能靠这里的开关控制注册；
+    // 通用级与项目级也读同一份状态，但它们的正文过滤由注册表按
+    // modelInvocable 决定，二者要保持一致。
+    const prefs = await loadPrefs()
+    const rows = [...byKey.values()].map((row) => {
+      const key = prefKey(row)
+      const stored = prefs.visibility[key]
+      // 三态：off / smart / on。兼容早期的布尔值。
+      let mode
+      if (stored === 'on' || stored === 'smart' || stored === 'off') mode = stored
+      else if (typeof stored === 'boolean') mode = stored ? 'on' : 'off'
+      // 系统级默认 off（这正是"插件开发技能读不到"的原因），其余默认 on。
+      else mode = row.scope === 'system' ? 'off' : 'on'
+      return {
+        ...row,
+        mode,
+        // 智能态在接入决策模型前，对 agent 不可见（等同于 off），
+        // 但状态保留，将来接上模型只需改这里。
+        visible: mode === 'on',
+      }
+    })
+
+    return { skills: sortRows(rows), complete }
   }
 
   /**
@@ -461,6 +488,33 @@ export function apply(ctx) {
   const scanner = new SkillScanner(ctx)
   const dispose = ctx.provide(SERVICES.scanner, scanner)
   ctx.effect(() => dispose, SCOPE + ': scanner service')
+
+  // 可见度桥接：让「已开启」的内嵌技能对 agent 可见。
+  // 注册失败（例如注册表尚未就绪）不应拖垮整个插件。
+  try {
+    const uninstall = installVisibility(ctx, {
+      collect: () => scanner.catalog(undefined).then((c) => c.skills),
+      readBody: (innerPath) => {
+        const archive = scanner.asarPath()
+        return archive === null ? Promise.resolve(null) : readAsarFile(archive, innerPath)
+      },
+    })
+    ctx.effect(() => uninstall, SCOPE + ': visibility provider')
+  } catch (error) {
+    ctx.logger?.warn?.('[' + SCOPE + '] visibility provider skipped: ' + (error?.message ?? error))
+  }
+
+  // 列表变更通知：会话中途开关技能时，在上下文末尾告诉模型发生了什么。
+  try {
+    installChangeNotifier(ctx, {
+      collectVisible: async () => {
+        const catalog = await scanner.catalog(undefined)
+        return catalog.skills.filter((row) => row.visible !== false).map((row) => row.name)
+      },
+    })
+  } catch (error) {
+    ctx.logger?.warn?.('[' + SCOPE + '] change notifier skipped: ' + (error?.message ?? error))
+  }
   ctx.logger?.debug?.('[' + SCOPE + '] scanner ready')
 }
 

@@ -16,6 +16,7 @@ import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { SERVICES, SCOPE } from '../shared/index.js'
+import { loadPrefs, savePrefs, prefKey } from '../scanner/prefs.js'
 
 const MODEL_KEY = 'disable-model-invocation'
 const USER_KEY = 'user-invocable'
@@ -137,6 +138,40 @@ export class SkillStore {
     } catch (error) {
       return { ok: false, error: 'PURGE_FAILED: ' + error.message }
     }
+  }
+
+  /**
+   * 设置「对 agent 可见」。
+   *
+   * 这是系统级技能唯一的可操作项：它们的实体在 asar / 安装 assets 里，
+   * 不能改文件，只能改状态。状态一变，可见度 provider 下次 list()
+   * 就会反映出来（注册表会因 invalidate 重建）。
+   *
+   * 三态：
+   *   off   关闭 —— agent 完全看不到
+   *   smart 智能 —— 进入候选池，等决策模型决定何时注入（当前尚无模型，
+   *                 行为等同于 off，但状态保留，接口不变）
+   *   on    开启 —— 始终对 agent 可见
+   *
+   * @param {{ key?: string, name?: string, path?: string, archivePath?: string, mode: 'off'|'smart'|'on' }} input
+   */
+  async setVisibility(input) {
+    const mode = input?.mode
+    if (mode !== 'off' && mode !== 'smart' && mode !== 'on') {
+      return { ok: false, error: 'MISSING_MODE' }
+    }
+    const key = input?.key || input?.path || input?.archivePath || input?.name
+    if (typeof key !== 'string' || key === '') return { ok: false, error: 'MISSING_KEY' }
+
+    const prefs = await loadPrefs()
+    // 兼容旧数据：历史上是布尔，这里统一写成 mode 字符串。
+    prefs.visibility[key] = mode
+    const saved = await savePrefs(prefs)
+    if (saved.ok !== true) return saved
+
+    await this.invalidate()
+    this.ctx.emit?.('decision-skills/toggled', { key, mode })
+    return { ok: true, mode }
   }
 
   /**

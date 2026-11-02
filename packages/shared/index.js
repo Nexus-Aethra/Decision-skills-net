@@ -29,24 +29,34 @@ export const EVENTS = {
   removed: 'decision-skills/removed',
 }
 
-/** source -> 界面分组。与 @deepseek-ai/dsh-skill 的 SkillSource 对齐。 */
+/**
+ * source -> 界面分组（三个仓库）。
+ *
+ * 与产品定义严格对齐：
+ *   system  = 内嵌技能（asar 内 + 安装自带 assets）—— 只能控可见度，不可删
+ *   common  = ~/.dsh/skills 及用户级根目录 —— 通用级
+ *   project = 各工作区的 .agents/skills —— 项目级
+ */
 export const SOURCE_SCOPE = {
-  'user-dsh': 'system',
-  'user-agents': 'system',
-  custom: 'system',
-  runtime: 'system',
+  bundled: 'system',
+  'user-dsh': 'common',
+  'user-agents': 'common',
+  custom: 'common',
+  runtime: 'common',
   'project-dsh': 'project',
   'project-agents': 'project',
-  bundled: 'bundled',
 }
 
+/** 仓库标识与顺序（界面按此排序）。 */
+export const REPOS = ['system', 'common', 'project']
+
 /**
- * 把 source 归一成分组键。
+ * 把 source 归一成仓库键。
  * @param {string} source
- * @returns {'system'|'project'|'bundled'}
+ * @returns {'system'|'common'|'project'}
  */
 export function scopeOfSource(source) {
-  return SOURCE_SCOPE[source] ?? 'system'
+  return SOURCE_SCOPE[source] ?? 'common'
 }
 
 /**
