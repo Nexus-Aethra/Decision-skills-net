@@ -263,7 +263,21 @@ export class SkillScanner {
     return undefined
   }
 
-  /** 安装自带、无 provider 认领的技能目录。 */
+  /**
+   * 安装自带、但**没有 provider 认领**的技能目录。
+   *
+   * office 系列是个特例：官方 `@deepseek-ai/dsh-skill-office` provider 就会读
+   * `<runtime>/../office-skills`（assetRoot 由 DSH_BUNDLED_OFFICE_SKILLS 或
+   * runtime 路径推导）。它的候选**不带 path 字段**，所以注册表快照里那几条
+   * 看起来「没有路径」。
+   *
+   * 若我们也扫一遍同一个目录，同名技能会出现两条（一条官方、无路径；
+   * 一条我们扫的、有路径）——界面上就是重复条目。
+   *
+   * 所以：**官方 provider 已认领时不扫**，只在它缺席时才用磁盘兜底。
+   *
+   * @returns {string[]} 目录根
+   */
   extraRoots() {
     const roots = []
     const seen = new Set()
@@ -272,10 +286,42 @@ export class SkillScanner {
       seen.add(p)
       roots.push(p)
     }
+    if (this.officeProviderPresent()) return roots
     if (process.env.DSH_INSTALL_ROOT) push(join(process.env.DSH_INSTALL_ROOT, 'resources', 'runtime', 'office-skills'))
     push('E:\\dsh\\resources\\runtime\\office-skills')
     push(join(process.env.ProgramFiles ?? '', 'DeepSeek Harness', 'resources', 'runtime', 'office-skills'))
     return roots
+  }
+
+  /**
+   * 官方 office provider 是否已注册。
+   *
+   * 注册表没有公开的 provider 名单方法，但内部结构是稳定的：
+   *   skills.layers.global.providers —— NamedEntries，键是 provider 名
+   * 官方那个的 provider 名就是 'dsh-office'。
+   *
+   * 结果缓存到下次 invalidate：注册表状态变了缓存要作废。
+   *
+   * @returns {boolean}
+   */
+  officeProviderPresent() {
+    if (this._officeProviderPresent !== undefined) return this._officeProviderPresent
+    let present = false
+    try {
+      const skills = this.ctx.get('skills')
+      const providers = skills?.layers?.global?.providers
+      // NamedEntries.has(name)；兼容未来换成 Map 的情况。
+      present = typeof providers?.has === 'function'
+        ? providers.has('dsh-office')
+        : providers?.get?.('dsh-office') !== undefined
+    } catch { /* 服务形状未知：当作没有，交给磁盘兜底 */ }
+    this._officeProviderPresent = present
+    return present
+  }
+
+  /** 清掉「官方 provider 是否在场」的缓存（注册表状态变化后要重算）。 */
+  resetCaches() {
+    this._officeProviderPresent = undefined
   }
 
   /** 扫一个普通目录根。 */
@@ -397,6 +443,26 @@ export class SkillScanner {
       const key = row.name + '\u0000' + (row.path ?? row.archivePath ?? '')
       if (!byKey.has(key)) byKey.set(key, row)
     }
+    // 同名技能的合并表：同一个技能可能被**两个来源**同时报上来。
+    //   例：office 系列——官方 dsh-skill-office provider 从 asar 内的 assets
+    //   目录注册（快照里没有 path），而扫描器又从磁盘上的
+    //   <install>/resources/runtime/office-skills 扫了一遍（有 path）。
+    // 按「名字 + 路径」去重会把两者都留下，界面上就出现两条同名技能。
+    // 这里按**名字**去重，保留信息更全的那条：
+    //   1. 官方 provider 认领的（带 resourceBase）优先——正文由官方读，最权威
+    //   2. 其次有磁盘路径的——可预览、可编辑
+    //   3. 再其次任意一条
+    const byName = new Map()
+    const rank = (row) => {
+      if (row.official === true) return 3
+      if (row.path) return 2
+      return 1
+    }
+    const addDeduped = (row) => {
+      const previous = byName.get(row.name)
+      if (previous === undefined) { byName.set(row.name, row); return }
+      if (rank(row) > rank(previous)) byName.set(row.name, row)
+    }
 
     let skills
     try { skills = this.ctx.get('skills') } catch { skills = undefined }
@@ -438,6 +504,8 @@ export class SkillScanner {
             userDisabled: invocation.userInvocable === false,
             projectPath: context.projectPath ?? null,
             projectTitle: context.projectTitle ?? null,
+            // 官方 provider 认领的技能带 resourceBase，正文由它自己读，最权威。
+            official: summary.resourceBase !== undefined,
           }))
         }
       }
@@ -448,12 +516,17 @@ export class SkillScanner {
     }
     for (const row of await this.scanArchiveSkills()) add(row)
 
+    // 按名字合并：注册表条目与扫描条目可能指向同一个技能
+    // （官方 provider 从 asar 内 assets 注册，扫描器又从磁盘扫了一遍）。
+    // 合并后丢弃 byKey——它按「名字+路径」分桶，正是重复条目的来源。
+    for (const row of [...byKey.values()]) addDeduped(row)
+
     // 叠加「对 agent 可见」的状态。
     // 内嵌技能实体在 asar/assets 内不可写，只能靠这里的开关控制注册；
     // 通用级与项目级也读同一份状态，但它们的正文过滤由注册表按
     // modelInvocable 决定，二者要保持一致。
     const prefs = await loadPrefs()
-    const rows = [...byKey.values()].map((row) => {
+    const rows = [...byName.values()].map((row) => {
       const key = prefKey(row)
       const stored = prefs.visibility[key]
       // 三态：off / smart / on。兼容早期的布尔值。
@@ -556,6 +629,13 @@ export function apply(ctx) {
   } catch (error) {
     ctx.logger?.warn?.('[' + SCOPE + '] change notifier skipped: ' + (error?.message ?? error))
   }
+
+  // 注册表内容变化时清掉「官方 provider 是否在场」的缓存：
+  // provider 可能被装上或卸下，那会决定我们还要不要扫 office 目录。
+  try {
+    ctx.on('skills/change', () => scanner.resetCaches(), 'decision-skills: reset caches')
+  } catch { /* 事件名不认识就跳过，缓存最坏只是过期一次 */ }
+
   ctx.logger?.debug?.('[' + SCOPE + '] scanner ready')
 }
 

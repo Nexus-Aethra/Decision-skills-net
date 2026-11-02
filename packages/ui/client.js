@@ -371,6 +371,9 @@
                 el('span', { key: 'nn', style: S.name }, skill.name),
               ),
               el('div', { key: 'd', style: S.desc }, skill.description || t('noDescription')),
+              // 来源标注：同名技能可能来自不同 provider，标出来才知道该信谁。
+              el('div', { key: 'pr', style: S.path },
+                skill.provider ? skill.provider + (skill.scope ? ' · ' + skill.scope : '') : ''),
               skill.path ? el('div', { key: 'pa', style: S.path }, skill.path) : null,
               el('div', { key: 'a', style: S.actions }, actions),
               skill.previewOpen

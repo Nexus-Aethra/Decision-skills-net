@@ -220,16 +220,28 @@ export class SkillStore {
 
   /**
    * 让注册表失效。
+   *
    * 不做这一步的话，界面会"删了没反应"——磁盘变了但缓存还返回旧目录。
+   *
+   * **旧实现调的是 `skills.providers()`，那个方法根本不存在**——异常被
+   * catch 静默吞掉，失效从未真正发生。注册表对外的有效入口是实例方法
+   * `invalidateCache()`（bump revision + 清 collect 缓存 + 通知变更）。
+   *
+   * @returns {boolean} 是否成功触发了失效
    */
   async invalidate() {
     try {
       const skills = this.ctx.get('skills')
-      const providers = skills?.providers?.()
-      for (const entry of providers ?? []) {
-        try { entry?.invalidate?.() ?? entry?.control?.invalidate?.() } catch { /* 单个失败不影响其它 */ }
+      if (skills === undefined) return false
+      if (typeof skills.invalidateCache === 'function') {
+        skills.invalidateCache()
+        return true
       }
-    } catch { /* 服务形状未知时静默 */ }
+      return false
+    } catch {
+      // 失效失败不能阻断写入本身（磁盘已经改了），静默即可。
+      return false
+    }
   }
 }
 

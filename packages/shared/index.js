@@ -92,6 +92,9 @@ export function makeRow(input) {
     editable: input.editable === true,
     projectPath: input.projectPath ?? null,
     projectTitle: input.projectTitle ?? null,
+    // 官方 provider 认领的技能：正文由官方自己读（走 resourceBase），最权威。
+    // 同名去重时优先保留它。
+    official: input.official === true,
   }
 }
 
