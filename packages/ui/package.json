@@ -9,12 +9,23 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "client.js"],
+  "files": [
+    "index.js",
+    "client.js"
+  ],
   "dsh": {
     "client": {
       "platform": "web",
-      "external": ["react"],
-      "inject": ["slots", "locale", "remote", "layout"]
+      "external": [
+        "react"
+      ],
+      "inject": [
+        "slots",
+        "locale",
+        "remote",
+        "layout",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
     }
   },
   "license": "MIT"

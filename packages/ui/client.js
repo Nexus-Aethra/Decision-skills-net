@@ -37,6 +37,17 @@
         }
         const { useEffect, useMemo, useState } = React
 
+        // 官方图标组件包。侧边栏的图标槽会传 { size, active }，
+        // 官方插件正是用这些 SVG 组件画面板图标——手写字符（◈）既
+        // 不符合视觉语言，也会因为自带尺寸而破坏侧边栏的对齐。
+        let Primitives
+        try {
+          Primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+        } catch (error) {
+          DIAG('factory-primitives', String((error && error.message) || error))
+          throw error
+        }
+
         const NS = 'skillManager'
         const LOCALE_NS = 'decisionSkills'
         const PANEL_ID = 'skills'
@@ -709,7 +720,11 @@
               order: 20,
               label: () => t('panel'),
               locale: LOCALE_NS,
-            }, function SkillsPanelIcon() {
+            }, function SkillsPanelIcon({ size, active }) {
+              // 侧边栏已提供 panelGlyph 容器（负责尺寸与左对齐），
+              // 这里**只返回图标本身**——像官方插件那样。
+              // 之前自己包了一层带固定 24x24 的 span，把侧边栏的对齐顶掉了。
+              const Glyph = Primitives.IconSkillOutlineRegular
               const open = () => {
                 try {
                   ctx.layout?.selectPanel?.(PANEL_ID)
@@ -717,21 +732,7 @@
                   DIAG('layout', String((error && error.message) || error))
                 }
               }
-              return el('span', {
-                role: 'button',
-                tabIndex: 0,
-                title: t('panel'),
-                onClick: open,
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open() }
-                },
-                style: {
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  width: 24, height: 24, fontSize: 15, cursor: 'pointer',
-                  borderRadius: 6,
-                },
-                'aria-hidden': 'false',
-              }, '\u25c8')
+              return el(Glyph, { size: size ?? 18, title: t('panel'), onClick: open })
             }))
           } catch (error) {
             DIAG('apply', String((error && error.message) || error) + '\n' + ((error && error.stack) || ''))
