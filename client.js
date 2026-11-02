@@ -265,6 +265,23 @@
             display: 'flex', flexDirection: 'column', gap: 10,
           },
           panelText: { fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' },
+          menu: {
+            position: 'absolute', top: 38, left: 0, zIndex: 50,
+            minWidth: 220, maxHeight: 280, overflow: 'auto',
+            display: 'flex', flexDirection: 'column', gap: 2, padding: 6,
+            background: 'var(--dsw-alias-bg-layer-2)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            borderRadius: 12,
+            boxShadow: '0 8px 24px rgba(0,0,0,.14)',
+          },
+          menuItem: (on) => ({
+            textAlign: 'left', padding: '7px 10px', fontSize: 12.5, cursor: 'pointer',
+            border: 'none', borderRadius: 8,
+            background: on ? 'var(--dsw-alias-interactive-bg-hover)' : 'transparent',
+            color: on ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }),
+          menuEmpty: { padding: '8px 10px', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
         }
 
         const el = (tag, props, children) => React.createElement(tag, props, children)
@@ -321,6 +338,7 @@
           const [preview, setPreview] = useState({})
           const [confirming, setConfirming] = useState({})
           const [notice, setNotice] = useState(null)
+          const [openMenu, setOpenMenu] = useState(false)
 
           const call = async (method, request) => {
             const ns = props.namespace
@@ -454,14 +472,33 @@
               }, t('refresh')),
             ]),
             el('div', { key: 'sb', style: S.toolbar }, [
-              el('span', { key: 'l', style: S.statLabel }, t('viewAll') + ' / ' + t('viewSession') + '：'),
-              el('select', {
-                key: 'sel', style: S.select, value: sessionId,
-                onChange: (event) => changeSession(event.target.value),
-              }, [
-                el('option', { key: 'all', value: '' }, t('viewAll') + '（' + t('unscopedHint') + '）'),
-                ...sessions.map((s) => el('option', { key: s.id, value: s.id },
-                  String(s.title || s.id).slice(0, 60))),
+              el('span', { key: 'l', style: S.statLabel },
+                t('viewSession') + '（' + sessions.length + '）：'),
+              // 自绘下拉：原生 select 的 option 在无障碍树里不暴露，
+              // 也拿不到一致的样式，这里用按钮 + 列表，行为完全可控。
+              el('div', { key: 'dd', style: { position: 'relative' } }, [
+                el('button', {
+                  key: 'btn', type: 'button',
+                  style: { ...S.ghost(false), minWidth: 180, textAlign: 'left' },
+                  onClick: () => setOpenMenu((v) => !v),
+                }, scoped
+                  ? (sessions.find((s) => s.id === sessionId)?.title ?? sessionId).slice(0, 34)
+                  : t('viewAll') + ' ?'),
+                openMenu
+                  ? el('div', { key: 'menu', style: S.menu }, [
+                      el('button', {
+                        key: 'all', type: 'button', style: S.menuItem(!scoped),
+                        onClick: () => { setOpenMenu(false); changeSession('') },
+                      }, t('viewAll')),
+                      ...sessions.slice(0, 60).map((s) => el('button', {
+                        key: s.id, type: 'button', style: S.menuItem(sessionId === s.id),
+                        onClick: () => { setOpenMenu(false); changeSession(s.id) },
+                      }, String(s.title || s.id).slice(0, 44))),
+                      sessions.length === 0
+                        ? el('div', { key: 'none', style: S.menuEmpty }, t('noSessions'))
+                        : null,
+                    ])
+                  : null,
               ]),
               scoped ? el('span', { key: 'h', style: S.statLabel }, t('scopedHint')) : null,
             ]),
