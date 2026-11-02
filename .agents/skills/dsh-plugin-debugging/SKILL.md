@@ -131,6 +131,40 @@ Promise.resolve(mounted).then(d => { ref.current = typeof d === 'function' ? d :
 ctx.effect(() => () => { ref.current?.(); ref.current = null })
 ```
 
+## 铁律二：先找系统已有的服务，再考虑自己实现
+
+**这是本项目踩得最久的一类坑。** 想拿某类数据时，先问宿主有没有现成服务，
+而不是直接去读底层存储。
+
+实例：会话列表。
+
+```js
+// 错：自己扫目录 + 自己写过滤规则
+const dirs = await readdir(join(DSH_HOME, 'sessions'))
+// 结果：侧边栏 1 个会话，插件显示 7 个 —— 空壳会话全被算进去了
+
+// 对：问系统的会话插件
+const items = (await ctx.get('sessionController')?.list({}))?.items
+```
+
+`sessionController.list()` 内部已做完三层过滤：可见性（remoteAccess）、
+cwd、`blank`（没有消息的空会话）。**自己重实现就会和界面对不上**，
+而且每补一条规则就换一种形式出错。
+
+判断方法：**界面上看到的东西，就去找驱动那个界面的服务**。
+侧边栏、列表页、面板——各自都有对应的 host 服务，它们已经把
+"显示什么、怎么排、过滤什么" 算好了。插件只该复用，不该重算。
+
+同类例子：
+
+| 想拿 | 用这个 | 不要用 |
+|---|---|---|
+| 会话列表 | `ctx.get('sessionController').list()` | 扫 `sessions/` 目录 |
+| 技能目录 | `ctx.skills.snapshot()` | `readdir` 技能根 |
+| 工作区列表 | `ctx.get('workspaceRegistry').list()` | 读 `workspace.json` |
+
+磁盘扫描只在**服务确实缺失**时作为兜底，且要在注释里写明为什么退化。
+
 ## 技能从哪来：注册表比扫盘可靠
 
 不要自己 `readdir` 技能根。`ctx.skills.snapshot({ cwd, scope })` 覆盖六类 source：
@@ -164,9 +198,9 @@ ctx.effect(() => () => { ref.current?.(); ref.current = null })
   要么在扫描时排除 `.trash`。
 - **改完文件注册表可能用旧缓存**：删除/移动技能后界面「删了没反应」，
   磁盘上其实已经变了。需要主动失效 provider。
-- **`ctx.sessions.list()` 只返回存活会话**（源码注释 "All live sessions"），
-  重启即归零。要列全部历史必须扫会话存储目录
-  `<DSH_HOME>/sessions/<workspace-slug>/session-*/`，或走 `sessionQuery`。
+- **别用 `ctx.sessions.list()` 当会话列表**：源码注释写明只返回
+  "All live sessions"，重启即归零。列会话请用 `sessionController.list()`（见铁律二）。
+  精简部署里该服务可能只有 `searchSessions` 没有 `listSessions`，两种都要试。
 - **原生 `<select>` 的 option 读不到**：无障碍树里不暴露，自动化测试拿不到，
   样式也难统一。用按钮 + 列表自绘。
 - **主题变量不是随便起的**：真实可用的是 `--dsw-alias-bg-layer-1/2/3`、
