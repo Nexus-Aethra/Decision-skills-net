@@ -49,6 +49,7 @@
           setEnabled: ['request'],
           removeSkill: ['request'],
           setVisibility: ['request'],
+          promoteSkill: ['request'],
         }
         const REMOTE_METHODS = Object.keys(METHOD_PARAMS)
 
@@ -97,7 +98,10 @@
           smartTitle: '智能注入',
           smartPending: '需要本地决策模型，尚未接入。这是占位入口。',
           promote: '提升到通用级',
-          promoted: '已提升到 ~/.dsh/skills',
+          promoted: '已复制到 ~/.dsh/skills（项目原件保留）',
+          promoteFailed: '提升失败',
+          chooseProject: '按项目筛选',
+          allProjects: '全部项目',
           noDescription: '（没有描述）',
           empty: '这个仓库还没有技能。',
           emptyFiltered: '没有符合条件的技能。',
@@ -125,7 +129,10 @@
           smartTitle: 'Smart injection',
           smartPending: 'Requires a local decision model; not wired up yet. Placeholder entry.',
           promote: 'Promote to common',
-          promoted: 'Promoted to ~/.dsh/skills',
+          promoted: 'Copied to ~/.dsh/skills (project original kept)',
+          promoteFailed: 'Promote failed',
+          chooseProject: 'Filter by project',
+          allProjects: 'All projects',
           noDescription: '(no description)',
           empty: 'No skills in this repository yet.',
           emptyFiltered: 'No skills match the filters.',
@@ -395,6 +402,8 @@
           const [notice, setNotice] = useState(null)
           // 顶部分页：一次只看一个仓库，避免三仓纵向堆叠过长
           const [tab, setTab] = useState('system')
+          // 项目级按工作区筛选：'' 表示全部项目
+          const [workspace, setWorkspace] = useState('')
 
           const call = async (method, request) => {
             const ns = props.namespace
@@ -458,6 +467,24 @@
             await load()
           }
 
+          // 提升到通用级：真正落盘（复制到 ~/.dsh/skills/<name>/）
+          const promoteSkill = async (skill) => {
+            const key = keyOf(skill)
+            setBusy((prev) => ({ ...prev, [key]: true }))
+            try {
+              const outcome = await call('promoteSkill', { path: skill.path })
+              if (outcome && outcome.ok === false) {
+                setNotice({ text: t('promoteFailed') + ': ' + String(outcome.error ?? '') })
+              } else {
+                setNotice({ text: t('promoted') })
+              }
+            } catch (error) {
+              setNotice({ text: t('promoteFailed') + ': ' + String((error && error.message) || error) })
+            }
+            setBusy((prev) => ({ ...prev, [key]: false }))
+            await load()
+          }
+
           const openPreview = async (skill) => {
             const key = keyOf(skill)
             if (preview[key] && preview[key].open) {
@@ -494,12 +521,14 @@
             // 每个仓库的条目数（用于 tab 徽标，过滤前统计）
             const counts = { system: 0, common: 0, project: 0 }
             for (const s of state.data.skills) counts[s.scope] = (counts[s.scope] ?? 0) + 1
-            // 当前 tab 下的条目
-            const current = rows.filter((s) => (s.scope ?? 'common') === tab)
+            // 当前 tab 下的条目；项目级再按选中的工作区过滤
+            const current = rows
+              .filter((s) => (s.scope ?? 'common') === tab)
+              .filter((s) => tab !== 'project' || workspace === '' || s.projectPath === workspace)
             return { counts, current, shown: current.length, total: state.data.skills.length }
-          // tab 必须进依赖：view.current 是按 tab 过滤的，
-          // 漏了它切换分页就不会重算，点了没反应。
-          }, [state, query, filter, preview, confirming, tab])
+          // tab 与 workspace 必须进依赖：view.current 按它们过滤，
+          // 漏了哪个哪个的切换就不会重算，点了没反应。
+          }, [state, query, filter, preview, confirming, tab, workspace])
 
           const children = [
             el('div', { key: 'h', style: S.head }, [
@@ -557,9 +586,34 @@
             const [, labelKey, hintKey] = TABS.find(([key]) => key === tab) ?? TABS[0]
             children.push(el('div', { key: 'repoHint', style: S.repoHint }, t(hintKey)))
 
+            // 项目级：按工作区筛选。列表数据里已带 projectPath / projectTitle。
+            if (tab === 'project') {
+              const projects = state.data.projects ?? []
+              if (projects.length > 0) {
+                children.push(el('div', { key: 'ws', style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 } }, [
+                  el('span', { key: 'lbl', style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, t('chooseProject')),
+                  el('select', {
+                    key: 'sel', value: workspace,
+                    onChange: (e) => setWorkspace(e.target.value),
+                    style: { ...S.search, width: 280 },
+                  }, [
+                    el('option', { key: 'all', value: '' }, t('allProjects')),
+                    ...projects.map((pr) => el('option', { key: pr.path, value: pr.path },
+                      (pr.title && pr.title !== pr.path ? pr.title + ' — ' : '') + pr.path)),
+                  ]),
+                ]))
+              }
+            }
+
             if (view.shown === 0) {
               children.push(el('div', { key: 'em', style: S.muted },
                 view.total === 0 ? t('empty') : t('emptyFiltered')))
+            }
+            // 诊断：注册表快照不完整时把原因亮出来，不让人对着空列表猜。
+            const errs = state.data.errors ?? []
+            if (errs.length > 0) {
+              children.push(el('div', { key: 'diag', style: { ...S.panel, marginTop: 8 } },
+                errs.map((e, i) => el('div', { key: i, style: S.panelText }, 'diag: ' + e))))
             }
 
             children.push(el('div', { key: 'list', style: S.repo },
@@ -574,7 +628,7 @@
                   onAskRemove: () => { setConfirming((p) => ({ ...p, [k]: true })); setNotice(null) },
                   onCancelRemove: () => setConfirming((p) => ({ ...p, [k]: false })),
                   onConfirmRemove: () => void removeSkill(skill),
-                  onPromote: () => setNotice({ text: t('promoted') }),
+                  onPromote: () => void promoteSkill(skill),
                 })
               })))
           }

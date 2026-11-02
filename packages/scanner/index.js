@@ -368,8 +368,10 @@ export class SkillScanner {
     let skills
     try { skills = this.ctx.get('skills') } catch { skills = undefined }
     let complete = true
+    const errors = []
     if (skills === undefined) {
       complete = false
+      errors.push('skills service unavailable (ctx.get("skills") === undefined)')
     } else {
       const contexts = [{ cwd: undefined }]
       for (const project of this.listProjects()) {
@@ -383,8 +385,9 @@ export class SkillScanner {
         let snapshot
         try {
           snapshot = await skills.snapshot({ cwd: context.cwd, scope: agent })
-        } catch {
+        } catch (error) {
           complete = false
+          errors.push('cwd=' + String(context.cwd) + ': ' + ((error && error.message) || String(error)))
           continue
         }
         if (snapshot.complete !== true) complete = false
@@ -435,7 +438,7 @@ export class SkillScanner {
       }
     })
 
-    return { skills: sortRows(rows), complete }
+    return { skills: sortRows(rows), complete, errors }
   }
 
   /**

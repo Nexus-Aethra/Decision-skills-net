@@ -12,8 +12,9 @@
  *
  * 未来的"过滤器"插件可以在这里前后挂：它只需要包一层 store。
  */
-import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename, rm, cp, copyFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { SERVICES, SCOPE } from '../shared/index.js'
 import { loadPrefs, savePrefs, prefKey } from '../scanner/prefs.js'
@@ -125,6 +126,49 @@ export class SkillStore {
     await this.invalidate()
     this.ctx.emit?.('decision-skills/removed', { name, movedTo: dest })
     return { ok: true, movedTo: dest }
+  }
+
+  /**
+   * 提升项目技能到通用级：复制到 ~/.dsh/skills/<name>/。
+   *
+   * 语义是**复制**而不是移动：项目里的原件保留——项目随时还在用它，
+   * 移走等于偷偷改了项目的文件。两份之后各自演化，这是有意的。
+   * 目录技能整个目录复制；平铺 .md 文件补成 <name>/SKILL.md。
+   */
+  async promote({ path }) {
+    if (typeof path !== 'string' || path === '') return { ok: false, error: 'MISSING_PATH' }
+    const isDirSkill = basename(path) === 'SKILL.md'
+    if (!isDirSkill && !path.endsWith('.md')) return { ok: false, error: 'UNEXPECTED_TARGET' }
+    const source = isDirSkill ? dirname(path) : path
+
+    // 名字取 frontmatter，缺了退回目录名；必须过技能名正则，否则写进去也扫不出来。
+    let text
+    try { text = await readFile(path, 'utf8') } catch (error) {
+      return { ok: false, error: 'READ_FAILED: ' + error.message }
+    }
+    const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+    const fmEnd = src.indexOf('\n---', 3)
+    const fmMatch = /^name\s*:\s*(.+)$/m.exec(src.slice(0, fmEnd === -1 ? 256 : fmEnd))
+    const fallback = isDirSkill ? basename(source) : basename(path, '.md')
+    const name = (fmMatch ? fmMatch[1].trim().replace(/^["']|["']$/g, '') : '') || fallback
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) return { ok: false, error: 'BAD_NAME: ' + name }
+
+    // 目标根与 scanner 的 user-dsh 根保持同一解析：DSH_HOME 优先，
+    // 否则 ~/.dsh。容器/桌面 profile 各自隔离，不写串。
+    const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+    const destDir = join(home, 'skills', name)
+    // 已存在不覆盖：覆盖会静默毁掉用户在通用级的手改。
+    if (existsSync(destDir)) return { ok: false, error: 'TARGET_EXISTS: ' + destDir }
+    try {
+      await mkdir(destDir, { recursive: true })
+      if (isDirSkill) await cp(source, destDir, { recursive: true })
+      else await copyFile(path, join(destDir, 'SKILL.md'))
+    } catch (error) {
+      return { ok: false, error: 'PROMOTE_FAILED: ' + error.message }
+    }
+    await this.invalidate()
+    this.ctx.emit?.('decision-skills/promoted', { name, dest: destDir })
+    return { ok: true, name, dest: destDir, mode: 'copy' }
   }
 
   /** 清空回收目录。 */

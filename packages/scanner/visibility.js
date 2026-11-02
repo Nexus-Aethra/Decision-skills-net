@@ -40,8 +40,9 @@ export function createVisibilityProvider({ collect, readBody }) {
         // 只处理内嵌技能：磁盘上的技能由官方 filesystem provider 负责，
         // 重复注册会造成同名冲突。
         if (row.scope !== 'system') continue
-        const visible = prefs.visibility[prefKey(row)]
-        if (visible !== true) continue
+        // 三态值：off / smart / on（兼容早期布尔）。只有 on 对 agent 可见。
+        const stored = prefs.visibility[prefKey(row)]
+        if (!(stored === 'on' || stored === true)) continue
         out.push({
           name: row.name,
           description: row.description,

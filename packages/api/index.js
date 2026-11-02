@@ -32,6 +32,7 @@ export const METHOD_PARAMS = {
   setEnabled: ['request'],
   removeSkill: ['request'],
   setVisibility: ['request'],
+  promoteSkill: ['request'],
 }
 
 /** 服务实现。 */
@@ -48,12 +49,27 @@ export class SkillManagerRemote {
     this.name = NAMESPACE
   }
 
-  /** 首屏（全局视角）。 */
+  /**
+   * 首屏。
+   *
+   * 注意：web 面的宿主级 skill-filesystem 是被 dsh-web-app 禁用的
+   * （本地发现归各 agent preset 的层管），所以不带 scope 的快照
+   * 永远拿不到磁盘技能——这不是缺陷，是机制设计。
+   * 这里借一个已存在会话的 scope 来读：它链上的 preset 层装着
+   * 自己的 skill-filesystem，项目级与用户级技能才能被看到。
+   */
   async list() {
-    const catalog = await this.scanner.catalog(undefined)
+    let agent
+    try {
+      const sessions = await this.scanner.listSessions()
+      const first = sessions.find((s) => s.id)
+      if (first) agent = this.scanner.resolveAgent(first.id)
+    } catch { /* 无会话就退回全局视角 */ }
+    const catalog = await this.scanner.catalog(agent)
     return {
       skills: catalog.skills,
       complete: catalog.complete,
+      errors: catalog.errors ?? [],
       projects: this.scanner.listProjects(),
       sessions: await this.scanner.listSessions(),
       generatedAt: Date.now(),
@@ -109,6 +125,11 @@ export class SkillManagerRemote {
       archivePath: request?.archivePath,
       mode: request?.mode,
     })
+  }
+
+  /** 提升：把项目技能复制到 ~/.dsh/skills/，成为通用级。 */
+  async promoteSkill(request) {
+    return this.store.promote({ path: request?.path })
   }
 }
 
