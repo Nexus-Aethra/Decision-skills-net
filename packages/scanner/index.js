@@ -548,8 +548,8 @@ export function apply(ctx) {
   // 列表变更通知：会话中途开关技能时，在上下文末尾告诉模型发生了什么。
   try {
     installChangeNotifier(ctx, {
-      collectVisible: async () => {
-        const catalog = await scanner.catalog(undefined)
+      collectVisible: async (agent) => {
+        const catalog = await scanner.catalog(agent)
         return catalog.skills.filter((row) => row.visible !== false).map((row) => row.name)
       },
     })

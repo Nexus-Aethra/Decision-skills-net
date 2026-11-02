@@ -63,7 +63,7 @@ function userMessage(text) {
  * 安装通知监听。
  *
  * @param {any} ctx
- * @param {{ collectVisible: () => Promise<string[]> }} deps
+ * @param {{ collectVisible: (agent: any) => Promise<string[]> }} deps
  * @returns {() => void}
  */
 export function installChangeNotifier(ctx, deps) {
@@ -75,7 +75,9 @@ export function installChangeNotifier(ctx, deps) {
 
     let names
     try {
-      names = await deps.collectVisible()
+      // 按**本会话的作用域**采集：省略 scope 时注册表只回全局层，
+      // 项目级与用户级技能不会出现在通知里，模型就漏知道了变更。
+      names = await deps.collectVisible(agent)
     } catch {
       return decision
     }
