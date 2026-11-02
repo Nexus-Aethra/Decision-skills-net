@@ -19,7 +19,9 @@
     return
   }
 
-  const MODULE_ID = '@local/decision-skills'
+  // 必须等于**包名**：宿主按包名去 client-modules 里找工厂函数，
+  // 名字对不上会报 "loaded without registering <pkg>" 并让整个 boot 失败。
+  const MODULE_ID = '@local/decision-skills-ui'
 
   try {
     window.__ModuleLoader__.load({
@@ -48,7 +50,6 @@
           read: ['request'],
           setEnabled: ['request'],
           removeSkill: ['request'],
-          purgeTrashDir: ['request'],
         }
         const REMOTE_METHODS = Object.keys(METHOD_PARAMS)
 
@@ -413,7 +414,11 @@
             }
             setPreview((prev) => ({ ...prev, [key]: { open: true, text: null } }))
             try {
-              const result = await call('read', { name: skill.name, file: skill.path ?? undefined })
+              const result = await call('read', {
+                name: skill.name,
+                path: skill.path ?? undefined,
+                archivePath: skill.archivePath ?? undefined,
+              })
               setPreview((prev) => ({ ...prev, [key]: { open: true, text: (result && result.content) || '' } }))
             } catch (error) {
               setPreview((prev) => ({ ...prev, [key]: { open: true, text: String((error && error.message) || error) } }))

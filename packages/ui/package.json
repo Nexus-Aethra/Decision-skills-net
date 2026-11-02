@@ -1,0 +1,21 @@
+{
+  "name": "@local/decision-skills-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "技能管理的设置界面：只负责渲染，不碰服务端。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "client.js"],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "external": ["react"],
+      "inject": ["slots", "locale", "remote"]
+    }
+  },
+  "license": "MIT"
+}

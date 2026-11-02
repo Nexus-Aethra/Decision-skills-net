@@ -1,0 +1,13 @@
+{
+  "name": "@local/decision-skills-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "技能管理的 Remote 面：把 scanner 与 store 暴露给浏览器。",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js"],
+  "license": "MIT"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@local/decision-skills-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "技能状态写入：开关（改 frontmatter）与删除（移入回收目录）。",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js"],
+  "license": "MIT"
+}

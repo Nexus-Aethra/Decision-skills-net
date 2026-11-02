@@ -1,0 +1,13 @@
+{
+  "name": "@local/decision-skills-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "技能采集器：合并注册表、工作区项目根、安装自带目录与 asar 内置技能。",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js"],
+  "license": "MIT"
+}

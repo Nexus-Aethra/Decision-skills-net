@@ -1,7 +1,21 @@
-# @local/decision-skills — 技能管理器。
+# @local/decision-skills —— 技能管理器整合包。
 #
-# 由插件管理器在 bundle 启用时挂载。行 id 与包名必须保持唯一。
+# 一个 insert 插入四行，顺序有意义：
+#   scanner  提供 skillScanner（无依赖）
+#   store    提供 skillStore（无依赖）
+#   api      提供 skillManager Remote（依赖前两个）
+#   ui       设置界面，宿主侧为空，dsh.client 指向 browser 半边
+#
 # 注意：重名的 patch 会**整体替换**该行的 config，不做深合并。
 - insert:
-    - id: decision-skills
-      name: '@local/decision-skills'
+    - id: decision-skills-scanner
+      name: '@local/decision-skills-scanner'
+
+    - id: decision-skills-store
+      name: '@local/decision-skills-store'
+
+    - id: decision-skills-api
+      name: '@local/decision-skills-api'
+
+    - id: decision-skills-ui
+      name: '@local/decision-skills-ui'

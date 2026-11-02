@@ -1,0 +1,13 @@
+{
+  "name": "@local/decision-skills-shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "技能能力的公共契约：source 归类、行形状、事件名。",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js"],
+  "license": "MIT"
+}
