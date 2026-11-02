@@ -28,6 +28,7 @@ export const NAMESPACE = SERVICES.api
 export const METHOD_PARAMS = {
   list: [],
   listForSession: ['request'],
+  sessionPolicy: ['request'],
   read: ['request'],
   setEnabled: ['request'],
   removeSkill: ['request'],
@@ -88,6 +89,52 @@ export class SkillManagerRemote {
       complete: catalog.complete,
       projects: this.scanner.listProjects(),
       sessions: await this.scanner.listSessions(),
+      generatedAt: Date.now(),
+    }
+  }
+
+  /**
+   * 某个会话的**技能放行策略**。
+   *
+   * 与 listForSession 的区别：只回策略必需的字段，
+   * 不带 projects/sessions（面板不需要它们，省一次会话列表查询）。
+   *
+   * 「放行策略」= 这个会话里，每个技能对 agent 是否可见：
+   *   mode    三态档位（off / smart / on）
+   *   visible 当前是否真的对 agent 可见
+   *   scope   来自哪个仓库
+   *   scoped  本次查询是否命中了这个会话的作用域
+   *            （false 说明只读到全局层，项目级技能没算进来）
+   */
+  async sessionPolicy(request) {
+    const sessionId = request?.sessionId
+    const agent = this.scanner.resolveAgent(sessionId)
+    const catalog = await this.scanner.catalog(agent)
+    const skills = catalog.skills.map((row) => ({
+      name: row.name,
+      description: row.description,
+      scope: row.scope,
+      source: row.source,
+      provider: row.provider,
+      mode: row.mode,
+      visible: row.visible === true,
+      path: row.path ?? null,
+      archivePath: row.archivePath ?? null,
+      projectPath: row.projectPath ?? null,
+    }))
+    const visible = skills.filter((row) => row.visible).length
+    return {
+      sessionId: sessionId ?? null,
+      // false 表示这个会话还没接上 agent 作用域，读到的只是全局层。
+      scoped: agent !== undefined,
+      skills,
+      totals: {
+        all: skills.length,
+        visible,
+        blocked: skills.length - visible,
+      },
+      complete: catalog.complete,
+      errors: catalog.errors ?? [],
       generatedAt: Date.now(),
     }
   }

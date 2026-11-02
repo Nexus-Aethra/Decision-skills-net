@@ -56,6 +56,7 @@
         const METHOD_PARAMS = {
           list: [],
           listForSession: ['request'],
+          sessionPolicy: ['request'],
           read: ['request'],
           setEnabled: ['request'],
           removeSkill: ['request'],
@@ -113,6 +114,16 @@
           promoteFailed: '提升失败',
           chooseProject: '按项目筛选',
           allProjects: '全部项目',
+          // 会话菜单里的「查看技能策略」
+          policyMenu: '查看技能策略',
+          policyTitle: '本会话的技能放行策略',
+          policyDesc: '这里列出该会话里 agent 能看到与看不到的技能。',
+          policyScoped: '已按本会话作用域统计。',
+          policyUnscoped: '本会话尚未接入作用域，只统计到全局层。',
+          policyVisible: '放行',
+          policyBlocked: '拦截',
+          policyEmpty: '这个会话没有可用技能。',
+          policyClose: '关闭',
           noDescription: '（没有描述）',
           empty: '这个仓库还没有技能。',
           emptyFiltered: '没有符合条件的技能。',
@@ -144,6 +155,15 @@
           promoteFailed: 'Promote failed',
           chooseProject: 'Filter by project',
           allProjects: 'All projects',
+          policyMenu: 'View skill policy',
+          policyTitle: 'Skill policy for this session',
+          policyDesc: 'Lists the skills this session lets through to the agent, and the ones it blocks.',
+          policyScoped: 'Scoped to this session.',
+          policyUnscoped: 'This session has no scope yet; only the global layer is counted.',
+          policyVisible: 'Allowed',
+          policyBlocked: 'Blocked',
+          policyEmpty: 'No skills available in this session.',
+          policyClose: 'Close',
           noDescription: '(no description)',
           empty: 'No skills in this repository yet.',
           emptyFiltered: 'No skills match the filters.',
@@ -151,6 +171,30 @@
           unreachable: 'Endpoint unreachable',
         }
         const S = {
+          // 会话技能策略面板
+          policyBody: { display: 'flex', flexDirection: 'column', gap: 10 },
+          policySummary: { display: 'flex', gap: 14, alignItems: 'center', fontSize: 12 },
+          policyCountVisible: { color: 'var(--dsw-alias-state-success-primary)', fontWeight: 600 },
+          policyCountBlocked: { color: 'var(--dsw-alias-label-tertiary)', fontWeight: 600 },
+          policyCountAll: { color: 'var(--dsw-alias-label-secondary)' },
+          policyNote: { fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)', lineHeight: 1.5 },
+          policyList: {
+            display: 'flex', flexDirection: 'column', gap: 6,
+            maxHeight: 360, overflow: 'auto', paddingRight: 4,
+          },
+          policyRow: {
+            display: 'flex', flexDirection: 'column', gap: 3, padding: '8px 10px',
+            background: 'var(--dsw-alias-bg-layer-1)',
+            border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10,
+          },
+          policyName: { fontSize: 13, fontWeight: 600 },
+          policyDesc: { fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.45 },
+          policyMeta: { display: 'flex', gap: 8, alignItems: 'center', fontSize: 11 },
+          policyBadge: { fontWeight: 600 },
+          policyAllowed: { color: 'var(--dsw-alias-state-success-primary)' },
+          policyDenied: { color: 'var(--dsw-alias-label-tertiary)' },
+          policyScope: { color: 'var(--dsw-alias-label-tertiary)' },
+          policyEmpty: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' },
           page: {
             display: 'flex', flexDirection: 'column', gap: 16, height: '100%',
             padding: '20px 24px', boxSizing: 'border-box', overflow: 'auto',
@@ -268,7 +312,12 @@
           },
           panelText: { fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' },
         }
-        const el = (tag, props, children) => React.createElement(tag, props, children)
+        // React.createElement(type, props, undefined) 会把 props.children 覆盖成 undefined——
+        // 所以第三个参数必须**省略**，不能传 undefined。
+        // JSX 编译成 jsx() 时没有这个行为，所以官方组件用它没问题。
+        const el = (tag, props, ...children) => (children.length > 0
+          ? React.createElement(tag, props, ...children)
+          : React.createElement(tag, props))
 
         /** 三种档位，顺序即滑块的从左到右。 */
         const MODES = ['off', 'smart', 'on']
@@ -649,6 +698,59 @@
 
           return el('div', { style: S.page }, children)
         }
+
+        /**
+         * 会话的技能放行策略面板。
+         *
+         * 回答一个问题：**这个会话里，agent 能看到哪些技能？**
+         * 数据来自 Remote 的 sessionPolicy——按该会话的作用域统计，
+         * 每个技能给三态档位（关闭/智能/开启）与当前是否真的放行。
+         *
+         * 这个组件是**弹层**（shell.overlay）里的内容，
+         * 由会话菜单项「查看技能策略」打开。
+         */
+        function SessionSkillPolicy({ policy, t }) {
+          if (policy === null || policy === undefined) {
+            return el('div', { style: S.policyEmpty }, t('loading'))
+          }
+          const rows = policy.skills ?? []
+          const totals = policy.totals ?? { all: rows.length, visible: 0, blocked: rows.length }
+          const children = [
+            el('div', { key: 'sum', style: S.policySummary }, [
+              el('span', { key: 'v', style: S.policyCountVisible }, t('policyVisible') + ' ' + totals.visible),
+              el('span', { key: 'b', style: S.policyCountBlocked }, t('policyBlocked') + ' ' + totals.blocked),
+              el('span', { key: 'a', style: S.policyCountAll }, '全部 ' + totals.all),
+            ]),
+            el('div', { key: 'note', style: S.policyNote },
+              policy.scoped ? t('policyScoped') : t('policyUnscoped')),
+          ]
+          if (rows.length === 0) {
+            children.push(el('div', { key: 'empty', style: S.policyEmpty }, t('policyEmpty')))
+          } else {
+            children.push(el('div', { key: 'list', style: S.policyList },
+              rows.map((skill) => {
+                const mode = skill.mode ?? 'off'
+                const color = mode === 'on'
+                  ? 'var(--dsw-alias-state-success-primary)'
+                  : mode === 'smart'
+                    ? 'var(--dsw-alias-brand-primary)'
+                    : 'var(--dsw-alias-label-tertiary)'
+                return el('div', { key: skill.name, style: S.policyRow }, [
+                  el('div', { key: 'n', style: S.policyName }, skill.name),
+                  el('div', { key: 'd', style: S.policyDesc }, skill.description || t('noDescription')),
+                  el('div', { key: 'm', style: S.policyMeta }, [
+                    el('span', { key: 'badge', style: { ...S.policyBadge, color } }, t('mode_' + mode)),
+                    el('span', { key: 'verdict', style: skill.visible ? S.policyAllowed : S.policyDenied },
+                      skill.visible ? t('policyVisible') : t('policyBlocked')),
+                    el('span', { key: 'scope', style: S.policyScope },
+                      skill.scope === 'system' ? t('repoSystem')
+                        : skill.scope === 'project' ? t('repoProject') : t('repoCommon')),
+                  ]),
+                ])
+              })))
+          }
+          return el('div', { style: S.policyBody }, children)
+        }
         function apply(ctx) {
           try {
             ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'decision-skills: locales')
@@ -700,6 +802,150 @@
               const liveState = useLive()
               return el(SkillRepoPage, { ...props, t, namespace: liveState.namespace })
             }
+
+
+            // ── 会话菜单里的「查看技能策略」 ─────────────────────────────
+            //
+            // 会话行的「三个点」菜单由 ui-workspace 渲染，
+            // 它把菜单项交给 sidebar.workspaces.session.menu.item 这个 list 槽；
+            // 每项拿到 { sessionId, displayTitle }。
+            //
+            // 点开后弹一个 Modal（shell.overlay）显示该会话的放行策略。
+            // 面板本身**不放进 main 槽**——它是会话级的，不属于技能仓库主页。
+
+            // 正在查看的会话（null = 没打开弹层）。
+            const policyRequest = { current: null, listeners: new Set() }
+            const notifyPolicy = () => { for (const fn of policyRequest.listeners) fn() }
+            const usePolicyRequest = () => {
+              const [, force] = useState(0)
+              useEffect(() => {
+                const fn = () => force((n) => n + 1)
+                policyRequest.listeners.add(fn)
+                return () => { policyRequest.listeners.delete(fn) }
+              }, [])
+              return policyRequest.current
+            }
+
+            // 读远端目录（菜单项与弹层共用）
+            const callRemote = async (method, request) => {
+              const ns = ctx.get(SERVICE_KEY) ?? null
+              if (!ns || typeof ns[method] !== 'function') {
+                throw new Error(t('unreachable') + ': ' + NS + '/' + method)
+              }
+              const envelope = request === undefined ? await ns[method]() : await ns[method](request)
+              if (envelope && typeof envelope === 'object' && 'ok' in envelope) {
+                if (!envelope.ok) {
+                  const failure = envelope.error ?? {}
+                  throw new Error(failure.code || failure.message || 'remote failed')
+                }
+                return envelope.value
+              }
+              return envelope
+            }
+
+            const openPolicy = (sessionId, displayTitle) => {
+              policyRequest.current = { sessionId, displayTitle, data: null, error: null }
+              notifyPolicy()
+              // 立刻取数据，弹层里显示加载态
+              callRemote('sessionPolicy', { sessionId }).then(
+                (data) => {
+                  if (policyRequest.current?.sessionId !== sessionId) return
+                  policyRequest.current = { ...policyRequest.current, data, error: null }
+                  notifyPolicy()
+                },
+                (error) => {
+                  if (policyRequest.current?.sessionId !== sessionId) return
+                  policyRequest.current = {
+                    ...policyRequest.current,
+                    error: String((error && error.message) || error),
+                  }
+                  notifyPolicy()
+                },
+              )
+            }
+            const closePolicy = () => {
+              policyRequest.current = null
+              notifyPolicy()
+            }
+
+            // 菜单项：只画一行，点开弹层。
+            function PolicyMenuItem({ sessionId, displayTitle }) {
+              const Glyph = Primitives.IconSkillOutlineRegular
+              return el(Primitives.MenuItemButton, {
+                icon: el(Glyph, { size: 14 }),
+                onSelect: () => { openPolicy(sessionId, displayTitle) },
+                children: t('policyMenu'),
+              })
+            }
+
+            // 弹层：Modal 里放策略面板。
+            function PolicyDialog() {
+              const request = usePolicyRequest()
+              if (request === null) return null
+              const close = () => closePolicy()
+              let body
+              if (request.error !== null) {
+                body = el('div', { style: S.policyEmpty }, t('error') + ': ' + request.error)
+              } else if (request.data === null) {
+                body = el('div', { style: S.policyEmpty }, t('loading'))
+              } else {
+                body = el(SessionSkillPolicy, { policy: request.data, t })
+              }
+              return el(Primitives.Modal, {
+                open: true,
+                onClose: close,
+                closeLabel: t('policyClose'),
+                title: t('policyTitle'),
+                description: t('policyDesc'),
+                children: body,
+              })
+            }
+            // 会话菜单项 + 弹层。
+            //
+            // 菜单槽是 list 型：每次渲染都会拿到当前会话的 { sessionId, displayTitle }。
+            //
+            // **必须等槽被声明后才能注册**：
+            // 这个槽是 ui-workspace 的 sidebar.workspaces 的子槽，
+            // 插件启动顺序不保证它已经存在。槽还没声明时 register 会抛
+            // "slot ... is not declared (a parent entry's children table must declare it)"，
+            // 而这个异常发生在 inject 的生成器里，只会静默失败——
+            // 表现为菜单里根本没有这一项。
+            //
+            // 做法：先看 spec；没有就订阅槽的声明通知，声明到了再注册。
+            let menuRegistered = false
+            const registerPolicyMenu = () => {
+              if (menuRegistered) return
+              const spec = ctx.slots.spec?.('sidebar.workspaces.session.menu.item')
+              if (spec === undefined) return
+              menuRegistered = true
+              try {
+                ctx.slots.inject('sidebar.workspaces.session.menu.item', function* () {
+                  yield ctx.slots.register({
+                    name: 'sidebar.workspaces.session.menu.item',
+                    id: 'decision-skills-policy',
+                    order: 350,
+                    locale: LOCALE_NS,
+                    inject: () => ({}),
+                  }, PolicyMenuItem)
+                })
+              } catch (error) {
+                DIAG('slots', 'register failed: ' + String((error && error.message) || error))
+              }
+            }
+            registerPolicyMenu()
+            try {
+              const unsub = ctx.slots.subscribe?.('sidebar.workspaces.session.menu.item', () => {
+                registerPolicyMenu()
+              })
+              if (typeof unsub === 'function') ctx.effect(() => unsub, 'decision-skills: slot watch')
+            } catch (error) { DIAG('slots', 'subscribe failed: ' + String((error && error.message) || error)) }
+            ctx.slots.inject('shell.overlay', function* () {
+              yield ctx.slots.register({
+                name: 'shell.overlay',
+                id: 'decision-skills-policy',
+                locale: LOCALE_NS,
+              }, PolicyDialog)
+            })
 
             // 主面板：左侧栏图标点开后的整页内容。
             ctx.slots.inject('main', function* () {
