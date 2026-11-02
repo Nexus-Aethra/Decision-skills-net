@@ -267,10 +267,12 @@
         function ModeSlider({ mode, busy, disabled, onChange, label, t }) {
           const index = Math.max(0, MODES.indexOf(mode))
           const knobLeft = index === 0 ? 3 : index === 1 ? 33 : 63
+          // 颜色映射（按产品要求）：
+          //   关闭 = 中性灰，智能 = 蓝（品牌色），开启 = 绿（success）
           const trackColor = mode === 'on'
-            ? 'var(--dsw-alias-state-business-primary)'
+            ? 'var(--dsw-alias-state-success-primary)'
             : mode === 'smart'
-              ? 'var(--dsw-alias-state-warn-primary)'
+              ? 'var(--dsw-alias-brand-primary)'
               : 'var(--dsw-alias-border-l3)'
           return el('div', {
             role: 'group',
@@ -328,9 +330,9 @@
             style: {
               fontSize: 11.5, minWidth: 34, textAlign: 'right',
               color: mode === 'on'
-                ? 'var(--dsw-alias-state-business-primary)'
+                ? 'var(--dsw-alias-state-success-primary)'
                 : mode === 'smart'
-                  ? 'var(--dsw-alias-state-warn-primary)'
+                  ? 'var(--dsw-alias-brand-primary)'
                   : 'var(--dsw-alias-label-tertiary)',
             },
           }, t('mode_' + (mode ?? 'off')))
