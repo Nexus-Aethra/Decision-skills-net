@@ -89,10 +89,18 @@ async function withPrefs(visibility, run) {
   }
 }
 
+/**
+ * 一条**只有我们能提供**的系统级技能（安装 assets / asar 扫描所得）。
+ *
+ * provider 名必须是我们自己的两种之一：defaultMode 靠它区分
+ * 「宿主没有 provider 认领」（默认 off）与「官方 provider 本来就认领」
+ * （默认 on，不能替用户关掉）。见 prefs.js 的 defaultMode。
+ */
 const SYSTEM_ROW = {
   name: 'office-docx',
   description: 'office docx',
   scope: 'system',
+  provider: 'install-assets',
   path: 'C:/fake/office-docx/SKILL.md',
 }
 
@@ -184,6 +192,35 @@ tests.push({
 })
 
 // ------------------------------------------------------------------
+// 3b. 官方 provider 认领的系统级技能默认可见（不被我们悄悄关掉）
+// ------------------------------------------------------------------
+tests.push({
+  name: '官方认领的系统级技能默认可见（与「只有我们能提供的」区分）',
+  run: async () => {
+    const { createVisibilityProvider } = await import('../packages/scanner/visibility.js')
+    const registry = new FakeRegistry()
+
+    await withPrefs({}, async () => {
+      // provider 是官方名字 → 本来就在目录里，默认 on
+      const owned = { name: 'office-docx', description: 'office docx', scope: 'system', provider: 'dsh-office', path: 'C:/fake/x/SKILL.md' }
+      // provider 是我们自己扫的 → 宿主没认领，默认 off
+      const ours = { name: 'cordis-plugin-development', description: 'preset skill', scope: 'system', provider: 'asar:agent-preset', path: null }
+      const provider = createVisibilityProvider({
+        collect: async () => [owned, ours],
+        readBody: async () => null,
+      })
+      registry.registerProvider(provider.name, provider)
+
+      const rows = await registry.list({ cwd: undefined })
+      const names = rows.map((r) => r.name)
+      // visibility provider 只负责「补上」内嵌技能；官方认领的那条
+      // 本来就由官方 provider 提供，这里不该被它抢先重复注册。
+      assert.equal(names.includes('cordis-plugin-development'), false, '默认 off 的应当不出现')
+    })
+  },
+})
+
+// ------------------------------------------------------------------
 // 4. 真实插件代码：scanner.systemRows() 绝不触碰注册表
 // ------------------------------------------------------------------
 tests.push({
@@ -191,20 +228,25 @@ tests.push({
   run: async () => {
     const { SkillScanner } = await import('../packages/scanner/index.js')
 
-    let registryQueried = false
+    // 递归只可能经由 collect 路径发生：snapshot / list / get。
+    // 读 provider **名单**（layers.global.providers）不触发 collect，是安全的，
+    // 而且 officeProviderPresent() 必须读它来判断要不要自己扫 office 目录。
+    const collected = []
     const ctx = {
       get(name) {
-        if (name === 'skills') {
-          registryQueried = true
-          throw new Error('systemRows() 不该查询注册表')
+        if (name !== 'skills') return undefined
+        return {
+          layers: { global: { providers: { has: () => false, get: () => undefined } } },
+          snapshot: (...args) => { collected.push('snapshot'); throw new Error('systemRows() 不该走 collect 路径') },
+          list: (...args) => { collected.push('list'); throw new Error('systemRows() 不该走 collect 路径') },
+          get: (...args) => { collected.push('get'); throw new Error('systemRows() 不该走 collect 路径') },
         }
-        return undefined
       },
     }
 
     const scanner = new SkillScanner(ctx)
     const rows = await scanner.systemRows()
-    assert.equal(registryQueried, false, 'systemRows() 绝不能查询注册表')
+    assert.deepEqual(collected, [], 'systemRows() 绝不能走注册表的 collect 路径')
     assert.ok(Array.isArray(rows), 'systemRows() 应当返回数组')
   },
 })

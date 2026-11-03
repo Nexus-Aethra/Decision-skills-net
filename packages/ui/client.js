@@ -61,6 +61,8 @@
           setEnabled: ['request'],
           removeSkill: ['request'],
           setVisibility: ['request'],
+          setSessionVisibility: ['request'],
+          resetSessionVisibility: ['request'],
           promoteSkill: ['request'],
         }
         const REMOTE_METHODS = Object.keys(METHOD_PARAMS)
@@ -121,9 +123,18 @@
           policyScoped: '已按本会话作用域统计。',
           policyUnscoped: '本会话尚未接入作用域，只统计到全局层。',
           policyVisible: '放行',
+          policyAll: '全部',
           policyBlocked: '拦截',
           policyEmpty: '这个会话没有可用技能。',
           policyClose: '关闭',
+          policyHint: '这里的改动能立刻生效，只影响这一个会话；仓库页的开关只决定新会话的默认值。',
+          policySessionOnly: '仅本会话',
+          policyFollowGlobal: '跟随默认',
+          policyReset: '恢复默认',
+          policyResetDone: '已恢复为跟随全局默认',
+          policySaveFailed: '切换失败',
+          repoGlobalHint: '这里的开关是新会话的默认策略；要调某个具体会话，请在会话菜单里点「查看技能策略」。',
+          projectHint: '项目级技能按项目切换，不能在这里统一开关——请在会话菜单里点「查看技能策略」，按单个会话调整。',
           noDescription: '（没有描述）',
           empty: '这个仓库还没有技能。',
           emptyFiltered: '没有符合条件的技能。',
@@ -161,9 +172,18 @@
           policyScoped: 'Scoped to this session.',
           policyUnscoped: 'This session has no scope yet; only the global layer is counted.',
           policyVisible: 'Allowed',
+          policyAll: 'All',
           policyBlocked: 'Blocked',
           policyEmpty: 'No skills available in this session.',
           policyClose: 'Close',
+          policyHint: 'Changes apply immediately and affect this session only; the repository switches set defaults for new sessions.',
+          policySessionOnly: 'this session',
+          policyFollowGlobal: 'follows default',
+          policyReset: 'Reset to default',
+          policyResetDone: 'Now follows the global default',
+          policySaveFailed: 'Could not switch',
+          repoGlobalHint: 'These switches are the default for new sessions. To tune one specific session, open its menu and choose "View skill policy".',
+          projectHint: 'Project skills vary per project, so they cannot be switched here; open a session menu and choose "View skill policy" to tune them per session.',
           noDescription: '(no description)',
           empty: 'No skills in this repository yet.',
           emptyFiltered: 'No skills match the filters.',
@@ -195,6 +215,20 @@
           policyDenied: { color: 'var(--dsw-alias-label-tertiary)' },
           policyScope: { color: 'var(--dsw-alias-label-tertiary)' },
           policyEmpty: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', padding: '8px 0' },
+          policyRowHead: { display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' },
+          policyCtl: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 },
+          policyTag: {
+            fontSize: 10.5, padding: '1px 7px', borderRadius: 999,
+            color: 'var(--dsw-alias-brand-primary)',
+            background: 'var(--dsw-alias-bg-layer-2)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+          },
+          policyFollow: { fontSize: 10.5, color: 'var(--dsw-alias-label-tertiary)' },
+          policyResetBtn: {
+            height: 22, padding: '0 9px', fontSize: 11, cursor: 'pointer',
+            color: 'var(--dsw-alias-label-secondary)', background: 'transparent',
+            border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8,
+          },
           page: {
             display: 'flex', flexDirection: 'column', gap: 16, height: '100%',
             padding: '20px 24px', boxSizing: 'border-box', overflow: 'auto',
@@ -408,6 +442,10 @@
         function SkillCard({ skill, t, busy, confirming, onMode, onPreview, onAskRemove, onCancelRemove, onConfirmRemove, onPromote }) {
           // 系统级不可删（内嵌只读）；其余可删。
           const canRemove = skill.scope !== 'system'
+          // 项目级**不给开关**：同一个技能在不同会话里的理想状态不同，
+          // 在仓库里放一个统一开关只会误导（改了这一个项目下所有会话）。
+          // 项目级的档位改在会话里做——那里才是它真正被使用时的地方。
+          const canToggle = skill.scope !== 'project'
           const actions = [
             el('button', { key: 'pv', type: 'button', style: S.tagBtn(false), onClick: onPreview },
               skill.previewOpen ? t('collapse') : t('preview')),
@@ -425,8 +463,6 @@
           }
           return el('div', { style: S.card }, [
             el('div', { key: 'm', style: S.cardMain }, [
-              // 名称旁不再放状态 pill：三档滑块的位置本身就是状态，
-              // 重复一个文字标签只会让一行变挤。
               el('div', { key: 'n', style: S.nameRow },
                 el('span', { key: 'nn', style: S.name }, skill.name),
               ),
@@ -440,18 +476,20 @@
                 ? el('div', { key: 'pv2', style: S.preview }, skill.previewText ?? t('loading'))
                 : null,
             ]),
-            el('div', { key: 'ctl', style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 1 } }, [
-              el(ModeSlider, {
-                key: 'slider',
-                mode: skill.mode ?? 'off',
-                busy,
-                disabled: false,
-                onChange: onMode,
-                label: skill.name,
-                t,
-              }),
-              el(ModeLegend, { key: 'lg', mode: skill.mode ?? 'off', t }),
-            ]),
+            canToggle
+              ? el('div', { key: 'ctl', style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 1 } }, [
+                el(ModeSlider, {
+                  key: 'slider',
+                  mode: skill.globalMode ?? skill.mode ?? 'off',
+                  busy,
+                  disabled: false,
+                  onChange: onMode,
+                  label: skill.name,
+                  t,
+                }),
+                el(ModeLegend, { key: 'lg', mode: skill.globalMode ?? skill.mode ?? 'off', t }),
+              ])
+              : null,
           ])
         }
         function SkillRepoPage(props) {
@@ -648,6 +686,11 @@
 
             const [, labelKey, hintKey] = TABS.find(([key]) => key === tab) ?? TABS[0]
             children.push(el('div', { key: 'repoHint', style: S.repoHint }, t(hintKey)))
+            // 说清楚这个页面的开关到底管什么：
+            // 系统级/通用级的开关是**新会话的默认策略**，不是当前会话的即时状态；
+            // 项目级干脆没有开关，因为它必须按会话调。
+            children.push(el('div', { key: 'semantics', style: { ...S.panel, marginTop: 2 } },
+              el('div', { style: S.panelText }, tab === 'project' ? t('projectHint') : t('repoGlobalHint'))))
 
             // 项目级：按工作区筛选。列表数据里已带 projectPath / projectTitle。
             if (tab === 'project') {
@@ -709,42 +752,65 @@
          * 这个组件是**弹层**（shell.overlay）里的内容，
          * 由会话菜单项「查看技能策略」打开。
          */
-        function SessionSkillPolicy({ policy, t }) {
+        function SessionSkillPolicy({ policy, t, busy, onMode, onReset }) {
           if (policy === null || policy === undefined) {
             return el('div', { style: S.policyEmpty }, t('loading'))
           }
           const rows = policy.skills ?? []
           const totals = policy.totals ?? { all: rows.length, visible: 0, blocked: rows.length }
+          const sessionId = policy.sessionId
           const children = [
             el('div', { key: 'sum', style: S.policySummary }, [
               el('span', { key: 'v', style: S.policyCountVisible }, t('policyVisible') + ' ' + totals.visible),
               el('span', { key: 'b', style: S.policyCountBlocked }, t('policyBlocked') + ' ' + totals.blocked),
-              el('span', { key: 'a', style: S.policyCountAll }, '全部 ' + totals.all),
+              el('span', { key: 'a', style: S.policyCountAll }, t('policyAll') + ' ' + totals.all),
             ]),
             el('div', { key: 'note', style: S.policyNote },
-              policy.scoped ? t('policyScoped') : t('policyUnscoped')),
+              policy.scoped ? t('policyHint') : t('policyUnscoped')),
           ]
           if (rows.length === 0) {
             children.push(el('div', { key: 'empty', style: S.policyEmpty }, t('policyEmpty')))
           } else {
             children.push(el('div', { key: 'list', style: S.policyList },
               rows.map((skill) => {
+                // 三段式滑块直接绑在**本会话**的档位（skill.mode）。
+                // 改它只写 prefs.sessions[sessionId]，不碰全局默认。
                 const mode = skill.mode ?? 'off'
-                const color = mode === 'on'
-                  ? 'var(--dsw-alias-state-success-primary)'
-                  : mode === 'smart'
-                    ? 'var(--dsw-alias-brand-primary)'
-                    : 'var(--dsw-alias-label-tertiary)'
-                return el('div', { key: skill.name, style: S.policyRow }, [
-                  el('div', { key: 'n', style: S.policyName }, skill.name),
+                const rowKey = skill.name
+                const isBusy = Boolean(busy[rowKey])
+                return el('div', { key: rowKey, style: S.policyRow }, [
+                  el('div', { key: 'h', style: S.policyRowHead }, [
+                    el('span', { key: 'n', style: S.policyName }, skill.name),
+                    skill.overridden
+                      ? el('span', { key: 'tag', style: S.policyTag }, t('policySessionOnly'))
+                      : el('span', { key: 'tag', style: S.policyFollow }, t('policyFollowGlobal')),
+                  ]),
                   el('div', { key: 'd', style: S.policyDesc }, skill.description || t('noDescription')),
                   el('div', { key: 'm', style: S.policyMeta }, [
-                    el('span', { key: 'badge', style: { ...S.policyBadge, color } }, t('mode_' + mode)),
-                    el('span', { key: 'verdict', style: skill.visible ? S.policyAllowed : S.policyDenied },
-                      skill.visible ? t('policyVisible') : t('policyBlocked')),
                     el('span', { key: 'scope', style: S.policyScope },
                       skill.scope === 'system' ? t('repoSystem')
                         : skill.scope === 'project' ? t('repoProject') : t('repoCommon')),
+                    el('span', { key: 'verdict', style: skill.visible ? S.policyAllowed : S.policyDenied },
+                      skill.visible ? t('policyVisible') : t('policyBlocked')),
+                  ]),
+                  el('div', { key: 'ctl', style: S.policyCtl }, [
+                    el(ModeSlider, {
+                      key: 'slider',
+                      mode,
+                      busy: isBusy,
+                      disabled: false,
+                      onChange: (next) => onMode(sessionId, skill, next),
+                      label: skill.name,
+                      t,
+                    }),
+                    el(ModeLegend, { key: 'lg', mode, t }),
+                    skill.overridden
+                      ? el('button', {
+                        key: 'rs', type: 'button', style: S.policyResetBtn,
+                        disabled: isBusy,
+                        onClick: () => onReset(sessionId),
+                      }, t('policyReset'))
+                      : null,
                   ]),
                 ])
               })))
@@ -879,17 +945,74 @@
             }
 
             // 弹层：Modal 里放策略面板。
+            //
+            // 面板是**可交互**的：每行一个三段式滑块，改的是这个会话的档位。
+            // 改完立刻刷新本面板，让「放行/拦截」的判定跟着动。
             function PolicyDialog() {
               const request = usePolicyRequest()
+              const [busy, setBusy] = useState({})
               if (request === null) return null
               const close = () => closePolicy()
+
+              const reload = async (sessionId) => {
+                try {
+                  const data = await callRemote('sessionPolicy', { sessionId })
+                  if (policyRequest.current?.sessionId !== sessionId) return
+                  policyRequest.current = { ...policyRequest.current, data, error: null }
+                  notifyPolicy()
+                } catch (error) {
+                  if (policyRequest.current?.sessionId !== sessionId) return
+                  policyRequest.current = {
+                    ...policyRequest.current,
+                    error: String((error && error.message) || error),
+                  }
+                  notifyPolicy()
+                }
+              }
+
+              const setMode = async (sessionId, skill, mode) => {
+                setBusy((prev) => ({ ...prev, [skill.name]: true }))
+                try {
+                  const outcome = await callRemote('setSessionVisibility', {
+                    sessionId,
+                    name: skill.name,
+                    mode,
+                    path: skill.path ?? undefined,
+                    archivePath: skill.archivePath ?? undefined,
+                    source: skill.source ?? undefined,
+                  })
+                  if (outcome && outcome.ok === false) {
+                    DIAG('setSessionVisibility', 'rejected: ' + String(outcome.error))
+                  }
+                } catch (error) {
+                  DIAG('setSessionVisibility', String((error && error.message) || error))
+                }
+                setBusy((prev) => ({ ...prev, [skill.name]: false }))
+                await reload(sessionId)
+              }
+
+              const reset = async (sessionId) => {
+                try {
+                  await callRemote('resetSessionVisibility', { sessionId })
+                } catch (error) {
+                  DIAG('resetSessionVisibility', String((error && error.message) || error))
+                }
+                await reload(sessionId)
+              }
+
               let body
               if (request.error !== null) {
                 body = el('div', { style: S.policyEmpty }, t('error') + ': ' + request.error)
               } else if (request.data === null) {
                 body = el('div', { style: S.policyEmpty }, t('loading'))
               } else {
-                body = el(SessionSkillPolicy, { policy: request.data, t })
+                body = el(SessionSkillPolicy, {
+                  policy: request.data,
+                  t,
+                  busy,
+                  onMode: (sessionId, skill, mode) => void setMode(sessionId, skill, mode),
+                  onReset: (sessionId) => void reset(sessionId),
+                })
               }
               return el(Primitives.Modal, {
                 open: true,

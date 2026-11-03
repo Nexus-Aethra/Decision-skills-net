@@ -33,6 +33,8 @@ export const METHOD_PARAMS = {
   setEnabled: ['request'],
   removeSkill: ['request'],
   setVisibility: ['request'],
+  setSessionVisibility: ['request'],
+  resetSessionVisibility: ['request'],
   promoteSkill: ['request'],
 }
 
@@ -81,7 +83,8 @@ export class SkillManagerRemote {
   async listForSession(request) {
     const sessionId = request?.sessionId
     const agent = this.scanner.resolveAgent(sessionId)
-    const catalog = await this.scanner.catalog(agent)
+    // 传 sessionId：给的是这个会话的实际档位，而不是全局默认。
+    const catalog = await this.scanner.catalog(agent, sessionId)
     return {
       sessionId: sessionId ?? null,
       scoped: agent !== undefined,
@@ -109,7 +112,9 @@ export class SkillManagerRemote {
   async sessionPolicy(request) {
     const sessionId = request?.sessionId
     const agent = this.scanner.resolveAgent(sessionId)
-    const catalog = await this.scanner.catalog(agent)
+    // 传 sessionId 才会套用会话覆盖；这也是这个面板与
+    // 「模型实际看到什么」保持同一口径的关键。
+    const catalog = await this.scanner.catalog(agent, sessionId)
     const skills = catalog.skills.map((row) => ({
       name: row.name,
       description: row.description,
@@ -117,7 +122,11 @@ export class SkillManagerRemote {
       source: row.source,
       provider: row.provider,
       mode: row.mode,
+      // 全局默认档位：面板上要能把「跟随默认」和「本会话改过」区分开。
+      globalMode: row.globalMode,
+      overridden: row.overridden === true,
       visible: row.visible === true,
+      editable: row.scope !== 'system',
       path: row.path ?? null,
       archivePath: row.archivePath ?? null,
       projectPath: row.projectPath ?? null,
@@ -132,6 +141,7 @@ export class SkillManagerRemote {
         all: skills.length,
         visible,
         blocked: skills.length - visible,
+        overridden: skills.filter((row) => row.overridden).length,
       },
       complete: catalog.complete,
       errors: catalog.errors ?? [],
@@ -172,6 +182,28 @@ export class SkillManagerRemote {
       archivePath: request?.archivePath,
       mode: request?.mode,
     })
+  }
+
+  /**
+   * 设置**某个会话**里一条技能的档位。
+   *
+   * 只影响这一个会话：写进 prefs.sessions[sessionId]，
+   * 不动全局默认，也不影响任何别的会话。
+   */
+  async setSessionVisibility(request) {
+    return this.store.setSessionVisibility({
+      sessionId: request?.sessionId,
+      name: request?.name,
+      mode: request?.mode,
+      path: request?.path,
+      archivePath: request?.archivePath,
+      source: request?.source,
+    })
+  }
+
+  /** 清掉某个会话的全部覆盖，回到「跟随全局默认」。 */
+  async resetSessionVisibility(request) {
+    return this.store.resetSessionVisibility({ sessionId: request?.sessionId })
   }
 
   /** 提升：把项目技能复制到 ~/.dsh/skills/，成为通用级。 */

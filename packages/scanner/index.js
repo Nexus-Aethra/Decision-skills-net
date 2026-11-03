@@ -19,8 +19,9 @@ import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeRow, sortRows, EVENTS, SERVICES, SCOPE } from '../shared/index.js'
-import { loadPrefs, prefKey } from './prefs.js'
+import { loadPrefs, resolveMode, sessionOverrides, entryMode } from './prefs.js'
 import { installVisibility } from './visibility.js'
+import { installSessionPolicy } from './session.js'
 import { installChangeNotifier } from './notifier.js'
 import { readAsarFile } from './asar.js'
 
@@ -436,8 +437,9 @@ export class SkillScanner {
   /**
    * 完整目录：注册表 + 项目根 + 安装目录 + asar。
    * @param agent 会话作用域，省略则只读全局与各工作区
+   * @param sessionId 会话 id，用于解析会话级档位（省略则只看全局默认）
    */
-  async catalog(agent) {
+  async catalog(agent, sessionId) {
     const byKey = new Map()
     const add = (row) => {
       const key = row.name + '\u0000' + (row.path ?? row.archivePath ?? '')
@@ -521,28 +523,32 @@ export class SkillScanner {
     // 合并后丢弃 byKey——它按「名字+路径」分桶，正是重复条目的来源。
     for (const row of [...byKey.values()]) addDeduped(row)
 
-    // 叠加「对 agent 可见」的状态。
-    // 内嵌技能实体在 asar/assets 内不可写，只能靠这里的开关控制注册；
-    // 通用级与项目级也读同一份状态，但它们的正文过滤由注册表按
-    // modelInvocable 决定，二者要保持一致。
+    // 叠加档位。
+    //
+    // 两层解析（见 prefs.js 的 resolveMode）：
+    //   会话覆盖 > 全局默认 > 按来源兜底
+    // 传了 sessionId 就给**这个会话的实际口径**，没传就是全局默认口径。
     const prefs = await loadPrefs()
     const rows = [...byName.values()].map((row) => {
-      const key = prefKey(row)
-      const stored = prefs.visibility[key]
-      // 三态：off / smart / on。兼容早期的布尔值。
-      let mode
-      if (stored === 'on' || stored === 'smart' || stored === 'off') mode = stored
-      else if (typeof stored === 'boolean') mode = stored ? 'on' : 'off'
-      // 系统级默认 off（这正是"插件开发技能读不到"的原因），其余默认 on。
-      else mode = row.scope === 'system' ? 'off' : 'on'
+      const mode = resolveMode(prefs, sessionId, row)
+      const globalMode = resolveMode(prefs, null, row)
       return {
         ...row,
         mode,
-        // 智能态在接入决策模型前，对 agent 不可见（等同于 off），
+        // 全局默认档位单列：仓库页显示的就是它，会话面板显示的是 mode。
+        // 两者在有会话覆盖时会不一样，这正是「实例偏离默认」的可视化。
+        globalMode,
+        // 这个会话是否显式调过。
+        overridden: mode !== globalMode,
+        // 智能态在接入决策模型前对 agent 不可见（等同于 off），
         // 但状态保留，将来接上模型只需改这里。
         visible: mode === 'on',
       }
     })
+
+    // 记一份「名字 + 来源」的轻量快照：会话执行端在 provider.list() 里
+    // 不能回调注册表，只能读内存，靠这份缓存兜底历史数据（全局键只有路径）。
+    this.lastKnownRows = rows.map((row) => ({ name: row.name, scope: row.scope, path: row.path }))
 
     return { skills: sortRows(rows), complete, errors }
   }
@@ -618,11 +624,58 @@ export function apply(ctx) {
     ctx.logger?.warn?.('[' + SCOPE + '] visibility provider skipped: ' + (error?.message ?? error))
   }
 
+  // ── 会话级策略执行端 ────────────────────────────────────────────
+  //
+  // 每个活的会话在**自己的作用域层**上挂一个屏蔽 provider：
+  // 该会话关掉的技能被同名遮蔽（modelInvocable:false），
+  // 全局关、该会话开的技能由原本提供它的 provider 负责（不在这里放行）。
+  // 只影响这一个会话。
+  //
+  // 为什么挂在 agent.ctx 上：注册表按「调用方 ctx 的作用域」入层
+  // （registerProvider → layers.effect(scopeOf(ctx))），
+  // 从插件自己的 ctx 调只会落进全局层，那就变成影响所有会话了。
+  const sessionPolicies = new WeakMap()
+  const mountSession = (agent) => {
+    if (agent === undefined || agent === null) return
+    if (sessionPolicies.has(agent)) return
+    const sessionId = typeof agent.id === 'string' ? agent.id : ''
+    if (sessionId === '') return
+    try {
+      const handle = installSessionPolicy(agent, {
+        sessionId,
+        // 历史数据兜底：全局档位可能只记了路径、没记名字，
+        // 这里给出已知行让执行端能反查到名字。用缓存的方法行，不碰注册表。
+        knownRows: () => scanner.lastKnownRows ?? [],
+      })
+      sessionPolicies.set(agent, handle)
+    } catch (error) {
+      ctx.logger?.warn?.('[' + SCOPE + '] session policy skipped: ' + (error?.message ?? error))
+    }
+  }
+  const unmountSession = (agent) => {
+    const handle = sessionPolicies.get(agent)
+    if (handle === undefined) return
+    sessionPolicies.delete(agent)
+    try { handle.dispose() } catch { /* 已卸载 */ }
+  }
+
+  // 已存在的会话先挂上（插件可能是后装的）。
+  try {
+    const agents = ctx.get('agents')
+    for (const agent of agents?.list?.() ?? []) mountSession(agent)
+  } catch { /* 无该服务：等下面的生命周期事件 */ }
+
+  try { ctx.on('agent/created', ({ agent }) => mountSession(agent), 'decision-skills: session policy mount') } catch { /* 事件名不认识就跳过 */ }
+  try { ctx.on('agent/disposed', ({ agent }) => unmountSession(agent), 'decision-skills: session policy unmount') } catch { /* 同上 */ }
+
   // 列表变更通知：会话中途开关技能时，在上下文末尾告诉模型发生了什么。
   try {
     installChangeNotifier(ctx, {
       collectVisible: async (agent) => {
-        const catalog = await scanner.catalog(agent)
+        // 按**本会话**的档位采集：传 sessionId 才会套用会话覆盖，
+        // 否则模型收到的是全局默认口径，与它实际看到的目录不一致。
+        const sessionId = typeof agent?.id === 'string' ? agent.id : undefined
+        const catalog = await scanner.catalog(agent, sessionId)
         return catalog.skills.filter((row) => row.visible !== false).map((row) => row.name)
       },
     })

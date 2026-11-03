@@ -273,6 +273,58 @@ cwd、`blank`（没有消息的空会话）。**自己重实现就会和界面�
   `--dsw-alias-state-business-primary` 等。**`--dsw-alias-bg-container` 不存在**，
   用了会渲染成透明或黑块。不确定时去 CSS 里搜一遍真实令牌。
 
+## 铁律三：per-scope 注册要看清「调用方 ctx 的作用域」
+
+想让某个注册**只影响一个会话**，必须弄懂 `registerProvider` 落在哪一层。
+
+```js
+// dsh-skill: registerProvider → this.layers.effect(this.ctx, …) → scopeOf(ctx)
+```
+
+**作用域来自调用方 ctx，不是注册表自己的 ctx。** cordis 的服务访问器会把
+`service.ctx` 重绑到访问方，所以：
+
+```js
+// 错：插件自己的 ctx → 全局层 → 影响所有会话
+ctx.skills.registerProvider(() => provider)
+
+// 对：agent 的 ctx → 该会话的层 → 只影响这一个会话
+agent.ctx.get('skills').registerProvider(() => provider)
+```
+
+读取时的合并顺序是 `[global, ...chainLayers(options.scope)]`，
+**近层按名字覆盖远层**。所以「在会话里屏蔽一个技能」的正确做法不是删除
+（provider 只能添加候选，删不掉别人的），而是**在同层遮蔽同名**，
+返回一个 `invocation.modelInvocable === false` 且 `rank: 1` 的候选——
+rank 小的先赢，官方的同名条目被压掉，官方目录过滤再把它整个滤掉。
+
+验证方法（不必开容器也能证）：拿真实 `SkillRegistry` + `createScope` 建两个会话层，
+各注册一个 provider，比对两次 `snapshot({ scope })`。层级关系对不对，
+一眼就能看出来。
+
+## 铁律四：provider 回调里绝不能回头调注册表
+
+`provider.list()` 是**被注册表 collect() 调用**的。在里面再调
+`ctx.skills.snapshot()` / `list()` 就是：
+
+```
+collect → provider.list() → snapshot → collect → provider.list() → …
+```
+
+爆栈 → 一串未处理的 promise 拒绝 → host 堆爆掉 → `exit 134`。
+这条已经在真机上崩过两次桌面端。
+
+判据：**provider 的实现里出现 `ctx.skills` 就是错的**，只读自己的状态与内存缓存。
+
+## 会话内改了档位但模型没反应
+
+多半是注册表缓存没失效。`ctx.skills.invalidateCache()` 是唯一有效入口
+（`providers()` 这个方法是**不存在**的，早期按猜测调它，异常被 catch 静默吞掉，
+表现就是"改了没反应")。
+
+另外注意 `collectCacheKey` 含 `{cwd, scopes: 作用域链, revision}`：
+**不同会话天然不共享缓存**，所以按会话隔离的改动不会串味。
+
 ## 验证清单
 
 ```

@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { SERVICES, SCOPE } from '../shared/index.js'
-import { loadPrefs, savePrefs, prefKey } from '../scanner/prefs.js'
+import { loadPrefs, savePrefs, prefKey, NAME_RE } from '../scanner/prefs.js'
 
 const MODEL_KEY = 'disable-model-invocation'
 const USER_KEY = 'user-invocable'
@@ -208,14 +208,77 @@ export class SkillStore {
     if (typeof key !== 'string' || key === '') return { ok: false, error: 'MISSING_KEY' }
 
     const prefs = await loadPrefs()
-    // 兼容旧数据：历史上是布尔，这里统一写成 mode 字符串。
-    prefs.visibility[key] = mode
+    // 写结构化记录而不是裸字符串：会话级执行端需要**按名字**屏蔽
+    // （注册表按名字合并），只存路径会让名字永久丢失。
+    prefs.visibility[key] = {
+      mode,
+      name: typeof input?.name === 'string' ? input.name : undefined,
+      path: typeof input?.path === 'string' ? input.path : undefined,
+      archivePath: typeof input?.archivePath === 'string' ? input.archivePath : undefined,
+      source: typeof input?.source === 'string' ? input.source : undefined,
+    }
     const saved = await savePrefs(prefs)
     if (saved.ok !== true) return saved
 
     await this.invalidate()
     this.ctx.emit?.('decision-skills/toggled', { key, mode })
     return { ok: true, mode }
+  }
+
+  /**
+   * 设置**某个会话**里一条技能的档位。
+   *
+   * 与 setVisibility 的区别：这个只影响这一个会话，
+   * 不改全局默认，也不触碰任何别的会话。
+   *
+   * 键是**技能名**而不是路径：注册表的合并与去重都以名字为单位，
+   * 用路径做键会出现「同名两条策略、注册表只认一条」的自相矛盾。
+   *
+   * @param {{sessionId: string, name: string, mode: 'off'|'smart'|'on', path?: string, archivePath?: string, source?: string}} input
+   */
+  async setSessionVisibility(input) {
+    const sessionId = input?.sessionId
+    const name = input?.name
+    const mode = input?.mode
+    if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, error: 'MISSING_SESSION' }
+    if (typeof name !== 'string' || !NAME_RE.test(name)) return { ok: false, error: 'MISSING_NAME' }
+    if (mode !== 'off' && mode !== 'smart' && mode !== 'on') {
+      return { ok: false, error: 'MISSING_MODE' }
+    }
+
+    const prefs = await loadPrefs()
+    const table = prefs.sessions[sessionId] ?? (prefs.sessions[sessionId] = {})
+    table[name] = {
+      mode,
+      path: typeof input?.path === 'string' ? input.path : undefined,
+      archivePath: typeof input?.archivePath === 'string' ? input.archivePath : undefined,
+      source: typeof input?.source === 'string' ? input.source : undefined,
+    }
+    const saved = await savePrefs(prefs)
+    if (saved.ok !== true) return saved
+
+    // 会话层的候选由 session provider 给出，必须让注册表重算，
+    // 否则模型那边要等到别的原因触发失效才看见变化。
+    await this.invalidate()
+    this.ctx.emit?.('decision-skills/session-toggled', { sessionId, name, mode })
+    return { ok: true, sessionId, name, mode }
+  }
+
+  /**
+   * 清掉某个会话的全部覆盖，回到「跟随全局默认」。
+   * @param {{sessionId: string}} input
+   */
+  async resetSessionVisibility(input) {
+    const sessionId = input?.sessionId
+    if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, error: 'MISSING_SESSION' }
+    const prefs = await loadPrefs()
+    if (prefs.sessions[sessionId] === undefined) return { ok: true, sessionId, cleared: 0 }
+    const cleared = Object.keys(prefs.sessions[sessionId]).length
+    delete prefs.sessions[sessionId]
+    const saved = await savePrefs(prefs)
+    if (saved.ok !== true) return saved
+    await this.invalidate()
+    return { ok: true, sessionId, cleared }
   }
 
   /**

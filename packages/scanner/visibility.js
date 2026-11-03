@@ -13,7 +13,7 @@
  * 卸下插件即恢复原状，不会留下副作用。
  */
 import { readAsarFile } from './asar.js'
-import { loadPrefs, prefKey } from './prefs.js'
+import { loadPrefs, resolveMode } from './prefs.js'
 import { parseFrontmatter } from './index.js'
 import { SCOPE } from '../shared/index.js'
 
@@ -32,21 +32,26 @@ export function createVisibilityProvider({ collect, readBody }) {
   return {
     name: VISIBILITY_PROVIDER,
 
-    async list() {
+    async list(options) {
       // ⚠️ collect 只能返回**不经过注册表**的行（scanner.systemRows()）。
       // provider.list() 是被注册表 collect() 调用的；这里若再回调 ctx.skills.snapshot()，
       // 会形成 collect → provider.list() → snapshot → collect 的无限递归，
       // 表现为爆栈后 host 进程 OOM 崩溃（退出码 134）。详见 scanner/index.js 的 systemRows()。
       const rows = await collect()
       const prefs = await loadPrefs()
+
+      // 注册表会把 snapshot 的 options 原样传下来（cwd / scope / signal）。
+      // scope 就是**正在查看的那个 agent**，所以全局层的 provider
+      // 也能按会话决定可见度——这是会话级策略能在这一层生效的前提。
+      const sessionId = typeof options?.scope?.id === 'string' ? options.scope.id : undefined
+
       const out = []
       for (const row of rows) {
         // 只处理内嵌技能：磁盘上的技能由官方 filesystem provider 负责，
         // 重复注册会造成同名冲突。
         if (row.scope !== 'system') continue
-        // 三态值：off / smart / on（兼容早期布尔）。只有 on 对 agent 可见。
-        const stored = prefs.visibility[prefKey(row)]
-        if (!(stored === 'on' || stored === true)) continue
+        // 会话覆盖 > 全局默认；只有 on 对 agent 可见。
+        if (resolveMode(prefs, sessionId, row) !== 'on') continue
         out.push({
           name: row.name,
           description: row.description,
