@@ -189,6 +189,48 @@ session provider 现在做**双向**：
 验证方式：把某条项目级技能关掉，重启宿主（内存清零），再打开策略弹层——
 那一行仍然是「拦截」，描述与仓库归属都还在。
 
+## 3.8 「/」菜单里的技能分组也要同口径
+
+输入框里敲 `/` 弹出的菜单有一个「技能」分组。**它不是我们画的**：
+
+- 官方 `@deepseek-ai/dsh-client-ui-skill` 往 `inputTriggers` 注册了一个
+  `(trigger='/', name='skill')` 的 source，自己调
+  `remote.skills.list({ sessionId })` 列出**注册表里的全部技能**，
+  不按任何策略过滤——它只给非模型可调用的条目加一个「user-only」前缀。
+- 于是被本会话拦掉的技能照样出现在菜单里，点进去还会失败。
+
+没有官方钩子：`registerSource` 对相同的 `(trigger, name)` **直接抛错**，
+source 契约（见该包 README）里也没有 filter / exclude。唯一可行的做法是把
+那个 source 的 `candidates()` 包一层做减法：
+
+```js
+const sources = ctx.get('inputTriggers')?.live?.sources
+const source = sources.find((s) => s.trigger === '/' && s.name === 'skill')
+const original = source.candidates.bind(source)
+source.candidates = async (session, arg) => {
+  const list = await original(session, arg)
+  const { blocked } = await policyOf(session.sessionId) // 我们的 sessionPolicy
+  return blocked === null ? list : list.filter((item) => !blocked.has(item.name))
+}
+```
+
+要点：
+
+- source 存在 `InputTriggerService.live.sources`（普通字段，非私有），
+  控制器每次命中都**按引用**取用，所以就地替换方法立刻生效，
+  连已经打开的会话控制器也一样。
+- 这是**明说的内部分界**：形状不对（服务没就绪 / 字段改名 / 找不到 source）
+  就什么都不做，菜单维持原样，只记一行诊断。`inputTriggers` 比我们晚就绪时
+  用 200ms × 100 次轮询补上，随插件卸载一起清掉。
+- 过滤只做减法：条目形状仍归官方 source，我们只按 `name` 剔除。
+- 判定用自己的 `sessionPolicy`（`visible !== true` 即拦），2 秒缓存；
+  任何一次档位写入都清缓存。
+- 拿不到策略时**不过滤**：宁可多显示一条，也不要凭空藏掉。
+
+实测：把 `cordis-plugin-development` 在本会话关掉，「/」菜单里立刻消失；
+开回来又出现；另外两条（`diagnose-windows-sandbox-acl`、`dsh-plugin-development`）
+保持在场。
+
 ## 4. ⚠️ 铁律：provider 回调里绝不能回头调注册表
 
 `provider.list()` 是**被注册表 collect() 调用**的。若在里面再调

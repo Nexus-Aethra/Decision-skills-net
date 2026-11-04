@@ -51,6 +51,7 @@ session.js 会话级执行端、notifier.js 变更通知、asar.js 读内嵌资�
 在仓库里放统一开关只会误导。
 
 两边都有分类分页（仓库页三页，策略弹层四页：全部 + 三层），页签带条数。
+输入框打 `/` 弹出的「技能」分组也按**本会话**的策略过滤（被拦的不出现）。
 
 > 细节（注册表分层、遮蔽机制、为什么宿主里有两个注册表、被屏蔽的行怎么保住）
 > 见 [doc/session-skill-policy.md](doc/session-skill-policy.md)。
@@ -81,6 +82,10 @@ session.js 会话级执行端、notifier.js 变更通知、asar.js 读内嵌资�
   （退出码 134）。provider 只能读 prefs 与内存。
 - **遮蔽候选出现后，真实条目就从快照里消失了**：目录侧必须把它补回成一整行，
   否则用户一关就再也找不到这个技能。
+- **官方 source 覆盖不了，只能包**：`/` 菜单的「技能」分组由
+  `dsh-client-ui-skill` 注册，`registerSource` 对同名 `(trigger, name)` 直接抛错，
+  契约里也没有 filter。对齐门户的做法是包一层它的 `candidates()` 做减法
+  （见 doc §3.8）；形状不对就放弃，菜单维持原样。
 
 详见 `.agents/skills/dsh-plugin-debugging`。
 

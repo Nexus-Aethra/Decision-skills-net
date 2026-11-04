@@ -316,6 +316,21 @@ collect → provider.list() → snapshot → collect → provider.list() → …
 
 判据：**provider 的实现里出现 `ctx.skills` 就是错的**，只读自己的状态与内存缓存。
 
+## 铁律五：别人的 source / slot 注册不能覆盖，只能包
+
+想改「别人画的东西」时，先确认有没有官方钩子：
+
+- **斜杠菜单的 source**：`ctx.inputTriggers.registerSource({ trigger, name, … })`
+  对相同的 `(trigger, name)` **直接抛错**，契约里也没有 filter。想过滤某个分组，
+  只能拿到已注册的 source 把它的 `candidates()` 包一层：
+  `ctx.get('inputTriggers').live.sources.find(s => s.trigger === '/' && s.name === 'skill')`。
+  控制器每次命中都按引用读 source，就地替换方法立即生效。
+- 这类"内部分界"必须**形状不对就放弃**：服务没就绪、字段改名、找不到对象，
+  都只记一行诊断然后什么都不做——绝不能让它的异常把整个插件带下去。
+
+验证手段：改完之后立刻在容器里做**双向**测试（关掉 → 消失；打开 → 出现）。
+只测一个方向会把「本来就没显示」误判成「过滤生效」。
+
 ## 会话内改了档位但模型没反应
 
 多半是注册表缓存没失效。`ctx.skills.invalidateCache()` 是唯一有效入口

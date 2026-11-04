@@ -380,6 +380,16 @@
         const MODES = ['off', 'smart', 'on']
 
         /**
+         * 「/」菜单策略缓存（会话 → 被拦的名字集合）。
+         *
+         * 那个菜单的候选来自**另一个插件**，我们只在它返回之后做减法，
+         * 所以这里缓存的是我们自己的判定，2 秒内的重复开菜单只问一次远端。
+         * 任何一次档位写入都会清掉它（见 invalidateSlashPolicyCache 的调用点）。
+         */
+        const slashPolicyCache = new Map()
+        const invalidateSlashPolicyCache = () => slashPolicyCache.clear()
+
+        /**
          * 三阶段滑块：关闭 / 智能 / 开启。
          *
          * 不用单按钮循环切换——那让"当前在哪一档"和"下一档是什么"都不可见。
@@ -577,6 +587,8 @@
             } catch (error) {
               DIAG('setVisibility', String((error && error.message) || error))
             }
+            // 档位变了，「/」菜单的过滤结果立刻过期
+            invalidateSlashPolicyCache()
             setBusy((prev) => ({ ...prev, [key]: false }))
             await load()
           }
@@ -986,6 +998,84 @@
               return envelope
             }
 
+            // ── 让「/」菜单里的技能分组与门户同口径 ─────────────────────────
+            //
+            // 那个分组不是我们画的：官方 dsh-client-ui-skill 往 inputTriggers
+            // 注册了一个 (trigger='/', name='skill') 的 source，自己调
+            // remote.skills.list({ sessionId }) 列出**注册表里的全部技能**，
+            // 不按任何策略过滤（只会给非模型可调用的条目加个「user-only」前缀）。
+            // 结果是被本会话拦掉的技能照样出现在菜单里，点进去还会失败。
+            //
+            // 没有官方钩子可用：registerSource 对相同的 (trigger, name) 直接抛错，
+            // source 契约里也没有 filter 之类的口子。所以只能把那个 source 的
+            // candidates() 包一层——source 对象存在 service.live.sources，
+            // 控制器每次命中都按引用取用，就地替换方法立即生效
+            // （包括已经建好的会话控制器）。
+            //
+            // 这是**明说的内部分界**：形状不对就什么都不做（菜单维持原样），
+            // 只记一行诊断；不抛错、不影响插件其它部分。
+            const policyOf = async (sessionId) => {
+              const hit = slashPolicyCache.get(sessionId)
+              if (hit !== undefined && Date.now() - hit.at < 2000) return hit
+              let blocked = null
+              try {
+                const policy = await callRemote('sessionPolicy', { sessionId })
+                blocked = new Set(
+                  (policy?.skills ?? []).filter((row) => row.visible !== true).map((row) => row.name),
+                )
+              } catch (error) {
+                // 拿不到策略时**不过滤**：宁可多显示一条，也不要凭空藏掉。
+                DIAG('slash-filter', 'sessionPolicy: ' + String((error && error.message) || error))
+                blocked = null
+              }
+              const entry = { at: Date.now(), blocked }
+              slashPolicyCache.set(sessionId, entry)
+              return entry
+            }
+
+            let slashPatched = false
+            const patchSlashSource = () => {
+              if (slashPatched) return true
+              let service
+              try { service = ctx.get('inputTriggers') } catch { return false }
+              const sources = service?.live?.sources
+              if (!Array.isArray(sources)) return false
+              const source = sources.find((item) => item?.trigger === '/' && item?.name === 'skill')
+              if (source === undefined || typeof source.candidates !== 'function') return false
+              const original = source.candidates.bind(source)
+              source.candidates = async (session, arg) => {
+                const list = await original(session, arg)
+                if (!Array.isArray(list) || list.length === 0) return list
+                const sessionId = session?.sessionId
+                if (typeof sessionId !== 'string' || sessionId === '') return list
+                const { blocked } = await policyOf(sessionId)
+                if (blocked === null || blocked.size === 0) return list
+                // 只做减法：条目形状归官方 source 管，我们只按名字剔除。
+                return list.filter((item) => !blocked.has(item?.name))
+              }
+              slashPatched = true
+              DIAG('slash-filter', 'patched: / skill 分组已按本会话策略过滤')
+              return true
+            }
+            // inputTriggers 可能比本插件晚就绪，轮询几次；找到就停。
+            if (!patchSlashSource()) {
+              let tries = 0
+              let timer
+              const tick = () => {
+                if (patchSlashSource()) return
+                tries += 1
+                if (tries > 100) {
+                  DIAG('slash-filter', 'inputTriggers 未就绪，放弃（/ 菜单维持原样）')
+                  return
+                }
+                timer = setTimeout(tick, 200)
+              }
+              ctx.effect(() => {
+                timer = setTimeout(tick, 200)
+                return () => { if (timer !== undefined) clearTimeout(timer) }
+              }, 'decision-skills: slash filter retry')
+            }
+
             const openPolicy = (sessionId, displayTitle) => {
               policyRequest.current = { sessionId, displayTitle, data: null, error: null }
               notifyPolicy()
@@ -1065,6 +1155,7 @@
                 } catch (error) {
                   DIAG('setSessionVisibility', String((error && error.message) || error))
                 }
+                invalidateSlashPolicyCache()
                 setBusy((prev) => ({ ...prev, [skill.name]: false }))
                 await reload(sessionId)
               }
@@ -1076,6 +1167,7 @@
                 } catch (error) {
                   DIAG('resetSessionVisibility', String((error && error.message) || error))
                 }
+                invalidateSlashPolicyCache()
                 await reload(sessionId)
               }
 
