@@ -237,9 +237,24 @@ source.candidates = async (session, arg) => {
   任何一次档位写入都清缓存。
 - 拿不到策略时**不过滤**：宁可多显示一条，也不要凭空藏掉。
 
-实测：把 `cordis-plugin-development` 在本会话关掉，「/」菜单里立刻消失；
-开回来又出现；另外两条（`diagnose-windows-sandbox-acl`、`dsh-plugin-development`）
-保持在场。
+过滤是**双向**的，两个方向都必须做，因为官方那份 catalog 是**客户端缓存**：
+
+| 方向 | 做法 | 为什么必须自己来 |
+|---|---|---|
+| 关 → 从菜单消失 | 按名字剔除 | 官方列表包含全部技能，不剔除就照旧显示 |
+| 开 → 立刻出现 | 按策略**补条目** | 官方缓存只在 `agent-preset/selected`、`plugin-manager/changed`、`connection/reset` 时失效；我们在门户里改档位不触发它们 |
+
+第二条尤其要紧：住在 asar 里的技能**只有开启后才会进注册表**（由会话 provider 交付），
+所以官方那份缓存里根本没有它，不补就永远等不到。
+
+补条目时按 `queryHits()` 自己比一遍查询（名字优先、描述兜底），
+排序交给官方那份，补的放末尾。
+
+实测（全部不刷新页面）：
+
+- 关掉 `office-docx` → 菜单里立刻没了；开回来 → 又有
+- 打开 `agent-experience`（asar 内、官方缓存里不存在）→ 菜单末尾立刻出现，
+  诊断显示 `base=10 kept=10 extra=1`（那 1 条就是我们补的）
 
 ## 4. ⚠️ 铁律：provider 回调里绝不能回头调注册表
 

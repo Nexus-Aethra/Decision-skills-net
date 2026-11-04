@@ -1017,20 +1017,32 @@
             const policyOf = async (sessionId) => {
               const hit = slashPolicyCache.get(sessionId)
               if (hit !== undefined && Date.now() - hit.at < 2000) return hit
-              let blocked = null
+              let entry
               try {
                 const policy = await callRemote('sessionPolicy', { sessionId })
-                blocked = new Set(
-                  (policy?.skills ?? []).filter((row) => row.visible !== true).map((row) => row.name),
-                )
+                const rows = policy?.skills ?? []
+                entry = {
+                  at: Date.now(),
+                  blocked: new Set(rows.filter((row) => row.visible !== true).map((row) => row.name)),
+                  // 「该出现但可能还没出现」的那一份：官方那种列表是**客户端缓存**，
+                  // 我们改完档位它不一定重拉（见下面的补条目）。
+                  visible: new Map(rows.filter((row) => row.visible === true).map((row) => [row.name, row.description ?? ''])),
+                }
               } catch (error) {
-                // 拿不到策略时**不过滤**：宁可多显示一条，也不要凭空藏掉。
+                // 拿不到策略就**完全放行**原列表：宁可多显示一条，也不要凭空藏掉。
                 DIAG('slash-filter', 'sessionPolicy: ' + String((error && error.message) || error))
-                blocked = null
+                entry = { at: Date.now(), failed: true }
               }
-              const entry = { at: Date.now(), blocked }
               slashPolicyCache.set(sessionId, entry)
               return entry
+            }
+
+            // 菜单查询匹配规则：官方那份用 rankByName（名字为主），
+            // 我们补的条目自己比一遍，名字优先、描述兜底。
+            const queryHits = (name, description, query) => {
+              if (query === '') return true
+              if (String(name ?? '').toLowerCase().includes(query)) return true
+              return String(description ?? '').toLowerCase().includes(query)
             }
 
             let slashPatched = false
@@ -1044,14 +1056,40 @@
               if (source === undefined || typeof source.candidates !== 'function') return false
               const original = source.candidates.bind(source)
               source.candidates = async (session, arg) => {
-                const list = await original(session, arg)
-                if (!Array.isArray(list) || list.length === 0) return list
                 const sessionId = session?.sessionId
-                if (typeof sessionId !== 'string' || sessionId === '') return list
-                const { blocked } = await policyOf(sessionId)
-                if (blocked === null || blocked.size === 0) return list
-                // 只做减法：条目形状归官方 source 管，我们只按名字剔除。
-                return list.filter((item) => !blocked.has(item?.name))
+                if (typeof sessionId !== 'string' || sessionId === '') {
+                  return original(session, arg)
+                }
+                const policy = await policyOf(sessionId)
+                // 官方那份自己也可能抛（会话没打开、catalog 拉失败）。
+                // 它抛不该连累我们：策略这边是对的，照我们的来。
+                let list = []
+                try { list = await original(session, arg) } catch (error) {
+                  if (policy.failed === true) throw error
+                  DIAG('slash-filter', '官方候选失败，改用策略: ' + String((error && error.message) || error))
+                }
+                if (policy.failed === true) return list
+                const base = Array.isArray(list) ? list : []
+
+                // ① 减法：策略说「拦」的，一条都不留。
+                const kept = base.filter((item) => !policy.blocked.has(item?.name))
+
+                // ② 加法：策略说「开」、但官方那份里没有的，由我们补上。
+                //
+                // 为什么必须有这一步：官方那份 catalog 是**客户端缓存**，
+                // 只在 agent-preset/selected、plugin-manager/changed、connection/reset
+                // 三个时机失效。我们在门户里改档位不会触发它们，于是刚开启的技能
+                // 要等刷新页面才出现在「/」里——用户看到的就是「菜单和策略不同步」。
+                // 自己补条目之后，菜单每次打开都以我们的策略为准（2 秒缓存）。
+                const query = String(arg?.query ?? '').trim().toLowerCase()
+                const present = new Set(kept.map((item) => item?.name))
+                const extra = []
+                for (const [name, description] of policy.visible) {
+                  if (present.has(name)) continue
+                  if (!queryHits(name, description, query)) continue
+                  extra.push({ name, description: description || '' })
+                }
+                return extra.length === 0 ? kept : [...kept, ...extra]
               }
               slashPatched = true
               DIAG('slash-filter', 'patched: / skill 分组已按本会话策略过滤')
