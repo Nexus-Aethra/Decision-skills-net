@@ -58,12 +58,26 @@ test('normalizeMode 收敛历史布尔与三态字符串', () => {
   assert.equal(entryMode('off'), 'off')
 })
 
-test('defaultMode 区分「只有我们能提供的」与「官方认领的」系统级技能', () => {
-  // asar / 安装扫描出来的：宿主没有 provider 认领，默认不塞给模型
-  assert.equal(defaultMode({ scope: 'system', provider: 'asar:agent-preset' }), 'off')
-  assert.equal(defaultMode({ scope: 'system', provider: 'install-assets' }), 'off')
-  // 官方 provider 自己认领的（office / badge / windows-acl）：本来就在目录里
-  assert.equal(defaultMode({ scope: 'system', provider: 'dsh-office' }), 'on')
+test('defaultMode：系统级默认关，其余默认开，且不看 provider', () => {
+  // 系统级：不管它住在 asar 里还是安装目录里，一律默认关
+  assert.equal(defaultMode({
+    scope: 'system', archivePath: '/dsh/node_modules/@deepseek-ai/dsh-agent-preset/skills/x/SKILL.md',
+  }), 'off')
+  assert.equal(defaultMode({
+    scope: 'system', path: 'E:/dsh/resources/runtime/office-skills/office/SKILL.md',
+  }), 'off')
+
+  // 回归：同一个技能由谁提供会漂移（官方 provider 在场 / 不在场），
+  // 默认档位**不许**跟着漂——那正是「我没点它，它自己变了」的来源。
+  const viaOfficial = { scope: 'system', provider: 'dsh-office', path: null, archivePath: null }
+  const viaScan = {
+    scope: 'system', provider: 'install-assets',
+    path: 'E:/dsh/resources/runtime/office-skills/office/SKILL.md',
+  }
+  assert.equal(defaultMode(viaOfficial), defaultMode(viaScan), 'provider 漂移不得改变默认档位')
+  assert.equal(defaultMode(viaOfficial), 'off')
+
+  // 用户自己的技能库默认放行
   assert.equal(defaultMode({ scope: 'common', provider: 'x' }), 'on')
   assert.equal(defaultMode({ scope: 'project', provider: 'x' }), 'on')
 })

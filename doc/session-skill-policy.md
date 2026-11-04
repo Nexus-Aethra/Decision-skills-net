@@ -32,16 +32,26 @@
 会话覆盖 > 全局默认 > 按来源兜底
 ```
 
-兜底规则见 `defaultMode()`，要点是**系统级内部还要再分两种**：
+兜底规则见 `defaultMode()`，只有一条：**系统级默认关，其余默认开。**
 
-| 系统级来源 | provider 名 | 默认 | 原因 |
-|---|---|---|---|
-| asar 内置 | `asar:agent-preset` | off | 宿主没有 provider 认领，不给就整个不存在 |
-| 安装 assets | `install-assets` | off | 同上 |
-| 官方认领的（office/badge/acl） | `dsh-office` 等 | on | 它们本来一直在目录里 |
+| scope | 默认 | 原因 |
+|---|---|---|
+| `system` | off | 内嵌 / 安装自带，不属于用户自己的技能库；不主动塞进模型上下文 |
+| `common` / `project` | on | 用户自己装的技能，本来就在目录里 |
 
-这条区分是实测出来的：早期一律按 off 处理，界面显示 office「关闭」，
-模型侧却照样看得见——两边说的不是同一件事。
+⚠️ 判据**只能看 scope，不能看 provider，也不能看路径**。
+
+踩过的坑（用户原话：「一堆 skills 也开启，我没点」）：早先按 provider 名分
+（我们扫的默认关、官方 provider 认领的默认开）。但同一个技能**由谁提供会漂移**
+——office 系列在官方 `dsh-office` 在场时由它提供，一旦那次采集没拿到
+（注册表刚失效重建，providers 表瞬时为空），就由我们的磁盘扫描补上。
+于是同一个技能在两次刷新之间在开 / 关之间跳，**点一条、六七条跟着变**。
+默认值一旦依赖"谁提供了这一行"，界面就不再是用户意志的反映。
+
+配套的另一半是**界面即事实**：默认关 ⇒ 注册表里就是被遮蔽的；用户点开 ⇒
+必须由会话级 provider 亲自把正文交出去。不能指望官方 provider——它在模型
+真正读的那个注册表里未必存在（实测：界面显示开启，模型回
+`skill "office-docx" is unknown or no longer available`）。
 
 ## 3. 会话级怎么真正做到「只影响这一个会话」
 
@@ -69,9 +79,9 @@ for (const layer of layers) {
 - 官方目录过滤 `snapshot.skills.filter(isModelInvocable)` 把它整个滤掉；
 - `skill` 工具按名字加载时也会被拒（`"not available for model invocation"`）。
 
-反向（全局关、本会话开）不需要特殊处理：放行永远由**原本提供该技能的那个 provider**
-负责——系统级归我们的 visibility provider（它同样按会话读档位），磁盘级归官方
-filesystem provider。少一条放行分支，就少一处正文读取、少一个出错的地方。
+反向（关 → 开）**也要我们自己做**，理由见 §3.5：宿主里有两个注册表，
+本来提供这个技能的 provider 未必在模型读的那个里。所以会话级 provider 是
+双向的——屏蔽给遮蔽候选，放行给真实候选并自己读正文。
 
 ### 3.3 怎么才能注册进「会话的层」
 

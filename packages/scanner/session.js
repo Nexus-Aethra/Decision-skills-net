@@ -132,22 +132,27 @@ export function createSessionProvider({ sessionId, knownRows, systemRows, readBo
         if (typeof row?.name === 'string') known.set(row.name, row)
       }
 
-      // ② 放行：本会话要开、但**没有别的 provider 能提供**的技能。
+      // ② 放行：本会话里「开」着的系统级技能，由我们交付真实候选。
       //
-      // 为什么需要这一段：宿主里存在不止一个技能注册表。
+      // 为什么必须我们交：宿主里存在不止一个技能注册表。
       // 宿主级注册表（UI 读的那个）里有我们的 visibility provider，
-      // 但模型实际读的是 preset 级注册表——visibility provider 并不在里面。
-      // 所以「全局开关打开」这条路径对模型无效，必须由挂在会话层的
-      // 这个 provider 自己把系统级技能的真实候选交出去。
+      // 但模型实际读的是 preset 级注册表——visibility provider 并不在里面，
+      // 官方的 office 之类 provider 也不一定在里面。只靠别人就会出现
+      // 「界面显示开启、模型说 unknown」。
       //
-      // 只处理 scanner 能**不经注册表**读到的系统级行（asar / 安装 assets）；
-      // 官方 provider 认领的那些它自己会给，不用我们管。
+      // 只处理 scanner 能**不经注册表**读到的系统级行（asar / 安装 assets）。
       let allowed = []
       if (typeof systemRows === 'function') {
         let rows = []
         try { rows = await systemRows() } catch { rows = [] }
         for (const row of rows) {
           if (row.scope !== 'system') continue
+          // 任何一条**系统级**技能，只要它是「开」，就由我们交付正文。
+          //
+          // 为什么不能依赖「谁本来提供它」：宿主里有两个注册表，官方 office 之类的
+          // provider 不一定在模型读的那个里；只靠它会出现「界面开启、模型 unknown」。
+          // 我们自己交 = 界面即事实。代价是同层里我们会遮蔽官方候选，
+          // 丢掉它的 resourceBase（正文之外的资源），换来两套说法永远一致。
           if (typeof row.name !== 'string' || !NAME_RE.test(row.name)) continue
           if (blocked.has(row.name)) continue
           if (resolveMode(prefs, sessionId, row) !== 'on') continue

@@ -214,26 +214,27 @@ export function locatorOf(prefs, sessionId, name) {
 /**
  * 一个技能「没有被任何档位配置提到」时的默认档位。
  *
- * 关键区分：`scope === 'system'` 里其实有**两种**东西，默认值必须不同。
+ * 规则只有一条：**系统级默认关，其余默认开。**
  *
- *   1. 只有我们能提供的（asar 内置 / 安装 assets）——宿主没有 provider 认领它们，
- *      不给就整个不存在。这类默认 off：不主动塞给模型。
- *   2. 官方 provider 自己就认领的（office / badge / windows-acl 等）——
- *      它们本来就一直在目录里，我们装作"默认关"只会让界面与实际不符。
- *      这类默认 on。
+ * ⚠️ 判据绝不能看 provider，也不能看路径。踩过的坑：
+ * 早先按 provider 名判（我们扫的默认关、官方 provider 认领的默认开）。
+ * 但同一个技能由谁提供**会漂移**——office 系列在官方 `dsh-office` 在场时由它提供，
+ * 一旦那次采集没拿到（注册表刚失效重建，providers 表瞬时为空），就由我们的
+ * 磁盘扫描补上。于是同一个技能两次刷新之间在「开」和「关」之间跳，
+ * 用户看到的是「我没点，它自己变了」，一次刷新能连带六七条一起变。
  *
- * 判据是 provider 名：我们自己扫出来的那两种没有官方 provider。
- * 早期版本一律按 off 处理，结果是 office 系列在界面上显示"关闭"、
- * 模型侧却能看见——两边说的不是一件事。
+ * 为什么系统级默认关：
+ *   - 它们内嵌在宿主 / 安装目录里，不属于用户自己的技能库，
+ *     不主动塞进模型的上下文 = 省 token、少干扰；
+ *   - 更重要的是**界面即事实**：默认关 ⇒ 注册表里就是被遮蔽的，
+ *     用户在门户里点开 ⇒ 我们负责把正文交出去。不会出现
+ *     「界面显示开启、模型却说 unknown」这种两套说法。
  *
- * @param {{scope?: string, provider?: string}} row
+ * @param {{scope?: string}} row
  * @returns {'off'|'on'}
  */
 export function defaultMode(row) {
-  if (row.scope !== 'system') return 'on'
-  // 这两种 provider 名来自 scanner 自己的磁盘 / asar 扫描，官方没有它们。
-  if (row.provider === 'asar:agent-preset' || row.provider === 'install-assets') return 'off'
-  return 'on'
+  return row.scope === 'system' ? 'off' : 'on'
 }
 
 /**

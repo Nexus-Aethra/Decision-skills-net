@@ -178,7 +178,8 @@ tests.push({
     const { createVisibilityProvider } = await import('../packages/scanner/visibility.js')
     const registry = new FakeRegistry()
 
-    await withPrefs({}, async () => {
+    // 显式关掉（不依赖默认值：默认档位由 prefs.defaultMode 的测试单独守）
+    await withPrefs({ [SYSTEM_ROW.path]: 'off' }, async () => {
       const provider = createVisibilityProvider({
         collect: async () => [SYSTEM_ROW],
         readBody: async () => null,
@@ -186,36 +187,48 @@ tests.push({
       registry.registerProvider(provider.name, provider)
 
       const rows = await registry.list({ cwd: undefined })
-      assert.equal(rows.length, 0, '未开启的系统级技能不应暴露')
+      assert.equal(rows.length, 0, '关闭的系统级技能不应暴露')
     })
   },
 })
 
 // ------------------------------------------------------------------
-// 3b. 官方 provider 认领的系统级技能默认可见（不被我们悄悄关掉）
+// 3b. 系统级技能默认关：不点不出现，点了才由 visibility provider 补上
 // ------------------------------------------------------------------
 tests.push({
-  name: '官方认领的系统级技能默认可见（与「只有我们能提供的」区分）',
+  name: '系统级默认关：显式开启后 visibility provider 才补上',
   run: async () => {
     const { createVisibilityProvider } = await import('../packages/scanner/visibility.js')
-    const registry = new FakeRegistry()
+    const owned = { name: 'office-docx', description: 'office docx', scope: 'system', provider: 'dsh-office', path: 'C:/fake/x/SKILL.md' }
+    const ours = {
+      name: 'cordis-plugin-development', description: 'preset skill', scope: 'system',
+      provider: 'asar:agent-preset', path: null,
+      archivePath: '/dsh/node_modules/@deepseek-ai/dsh-agent-preset/skills/cordis-plugin-development/SKILL.md',
+    }
 
+    // 默认：一条都不补（系统级默认关，界面显示关闭 → 模型也确实看不到）
     await withPrefs({}, async () => {
-      // provider 是官方名字 → 本来就在目录里，默认 on
-      const owned = { name: 'office-docx', description: 'office docx', scope: 'system', provider: 'dsh-office', path: 'C:/fake/x/SKILL.md' }
-      // provider 是我们自己扫的 → 宿主没认领，默认 off
-      const ours = { name: 'cordis-plugin-development', description: 'preset skill', scope: 'system', provider: 'asar:agent-preset', path: null }
+      const registry = new FakeRegistry()
       const provider = createVisibilityProvider({
         collect: async () => [owned, ours],
         readBody: async () => null,
       })
       registry.registerProvider(provider.name, provider)
-
       const rows = await registry.list({ cwd: undefined })
-      const names = rows.map((r) => r.name)
-      // visibility provider 只负责「补上」内嵌技能；官方认领的那条
-      // 本来就由官方 provider 提供，这里不该被它抢先重复注册。
-      assert.equal(names.includes('cordis-plugin-development'), false, '默认 off 的应当不出现')
+      assert.deepEqual(rows.map((r) => r.name), [], '系统级默认关：不该有任何一条被补出来')
+    })
+
+    // 显式开启 asar 里那一条 → 由我们交付（它的官方 provider 在模型读的
+    // 那个注册表里未必存在，所以不能指望别人）
+    await withPrefs({ [ours.archivePath]: 'on' }, async () => {
+      const registry = new FakeRegistry()
+      const provider = createVisibilityProvider({
+        collect: async () => [owned, ours],
+        readBody: async () => null,
+      })
+      registry.registerProvider(provider.name, provider)
+      const rows = await registry.list({ cwd: undefined })
+      assert.deepEqual(rows.map((r) => r.name), ['cordis-plugin-development'], '开启的那条要出现')
     })
   },
 })
