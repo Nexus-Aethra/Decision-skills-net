@@ -126,6 +126,8 @@
           policyAll: '全部',
           policyBlocked: '拦截',
           policyEmpty: '这个会话没有可用技能。',
+          policyTierEmpty: '这个分类下没有技能。',
+          policyTierAllHint: '本会话能看到的全部技能',
           policyClose: '关闭',
           policyHint: '这里的改动能立刻生效，只影响这一个会话；仓库页的开关只决定新会话的默认值。',
           policySessionOnly: '仅本会话',
@@ -175,6 +177,8 @@
           policyAll: 'All',
           policyBlocked: 'Blocked',
           policyEmpty: 'No skills available in this session.',
+          policyTierEmpty: 'No skills in this tier.',
+          policyTierAllHint: 'Every skill visible to this session',
           policyClose: 'Close',
           policyHint: 'Changes apply immediately and affect this session only; the repository switches set defaults for new sessions.',
           policySessionOnly: 'this session',
@@ -200,7 +204,8 @@
           policyNote: { fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary)', lineHeight: 1.5 },
           policyList: {
             display: 'flex', flexDirection: 'column', gap: 6,
-            maxHeight: 360, overflow: 'auto', paddingRight: 4,
+            // 弹层放宽之后列表也能更高：一次看七八行，少滚。
+            maxHeight: 460, overflow: 'auto', paddingRight: 4,
           },
           policyRow: {
             display: 'flex', flexDirection: 'column', gap: 3, padding: '8px 10px',
@@ -261,6 +266,24 @@
             color: 'var(--dsw-alias-label-secondary)', background: 'transparent',
             border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 10,
           },
+          // 会话策略弹层里的分页：弹层比整页窄得多，
+          // 复用整页那套（padding 9/14）会把「系统级」挤成竖排，
+          // 所以单独一套：四页等分、不换行、字号收小。
+          policyTabs: {
+            display: 'flex', gap: 2,
+            borderBottom: '1px solid var(--dsw-alias-border-l1)',
+          },
+          policyTab: (on) => ({
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+            flex: '1 1 0', minWidth: 0, whiteSpace: 'nowrap',
+            padding: '7px 6px', fontSize: 12, cursor: 'pointer',
+            border: 'none', background: 'transparent',
+            color: on ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-tertiary)',
+            fontWeight: on ? 600 : 400,
+            borderBottom: '2px solid ' + (on ? 'var(--dsw-alias-state-business-primary)' : 'transparent'),
+            marginBottom: -1,
+            transition: 'color 120ms ease, border-color 120ms ease',
+          }),
           // 顶部分页：整行等分，当前页用底部指示线。
           tabs: {
             display: 'flex', gap: 4,
@@ -545,6 +568,10 @@
                 path: skill.path ?? undefined,
                 archivePath: skill.archivePath ?? undefined,
                 mode,
+                source: skill.source ?? undefined,
+                // 描述必须一起存：关掉之后快照里只剩遮蔽占位，
+                // 界面上那一行要靠它把描述认回来。
+                description: skill.description ?? undefined,
               })
               if (outcome && outcome.ok === false) DIAG('setVisibility', 'rejected: ' + String(outcome.error))
             } catch (error) {
@@ -742,6 +769,20 @@
           return el('div', { style: S.page }, children)
         }
 
+        // 会话策略面板的分类分页。
+        //
+        // 一个会话里的技能横跨三层（系统 / 通用 / 项目），
+        // 全部平铺会有十几行，想调某一层就得在一堆条目里翻。
+        // 这里给出「全部 + 三层」四页，页签上带各自的条数。
+        const POLICY_TIERS = [
+          ['all', 'policyAll', 'policyTierAllHint'],
+          ['system', 'repoSystem', 'repoSystemHint'],
+          ['common', 'repoCommon', 'repoCommonHint'],
+          ['project', 'repoProject', 'repoProjectHint'],
+        ]
+        // scope 正常只会是这三种；未知值一律算通用级，别让条目凭空消失。
+        const tierOf = (skill) => (skill.scope === 'system' || skill.scope === 'project' ? skill.scope : 'common')
+
         /**
          * 会话的技能放行策略面板。
          *
@@ -753,26 +794,47 @@
          * 由会话菜单项「查看技能策略」打开。
          */
         function SessionSkillPolicy({ policy, t, busy, onMode, onReset }) {
+          // hooks 必须无条件执行，所以放在 loading 分支之前。
+          const [tier, setTier] = useState('all')
           if (policy === null || policy === undefined) {
             return el('div', { style: S.policyEmpty }, t('loading'))
           }
           const rows = policy.skills ?? []
-          const totals = policy.totals ?? { all: rows.length, visible: 0, blocked: rows.length }
+          const counts = { all: rows.length, system: 0, common: 0, project: 0 }
+          for (const row of rows) counts[tierOf(row)] += 1
+          // 只画当前分页的条目；汇总也按分页重算——
+          // 否则「系统级只有 12 行，汇总却写着全部 15」会让人以为数据错了。
+          const shown = tier === 'all' ? rows : rows.filter((row) => tierOf(row) === tier)
+          const visibleCount = shown.filter((row) => row.visible === true).length
           const sessionId = policy.sessionId
           const children = [
+            el('div', { key: 'tabs', style: S.policyTabs },
+              POLICY_TIERS.map(([key, labelKey, hintKey]) => el('button', {
+                key,
+                type: 'button',
+                role: 'tab',
+                'aria-selected': tier === key,
+                title: t(hintKey),
+                style: S.policyTab(tier === key),
+                onClick: () => setTier(key),
+              }, [
+                el('span', { key: 'l' }, t(labelKey)),
+                el('span', { key: 'c', style: S.tabCount(tier === key) }, String(counts[key] ?? 0)),
+              ]))),
             el('div', { key: 'sum', style: S.policySummary }, [
-              el('span', { key: 'v', style: S.policyCountVisible }, t('policyVisible') + ' ' + totals.visible),
-              el('span', { key: 'b', style: S.policyCountBlocked }, t('policyBlocked') + ' ' + totals.blocked),
-              el('span', { key: 'a', style: S.policyCountAll }, t('policyAll') + ' ' + totals.all),
+              el('span', { key: 'v', style: S.policyCountVisible }, t('policyVisible') + ' ' + visibleCount),
+              el('span', { key: 'b', style: S.policyCountBlocked }, t('policyBlocked') + ' ' + (shown.length - visibleCount)),
+              el('span', { key: 'a', style: S.policyCountAll }, t('policyAll') + ' ' + shown.length),
             ]),
             el('div', { key: 'note', style: S.policyNote },
               policy.scoped ? t('policyHint') : t('policyUnscoped')),
           ]
-          if (rows.length === 0) {
-            children.push(el('div', { key: 'empty', style: S.policyEmpty }, t('policyEmpty')))
+          if (shown.length === 0) {
+            children.push(el('div', { key: 'empty', style: S.policyEmpty },
+              rows.length === 0 ? t('policyEmpty') : t('policyTierEmpty')))
           } else {
             children.push(el('div', { key: 'list', style: S.policyList },
-              rows.map((skill) => {
+              shown.map((skill) => {
                 // 三段式滑块直接绑在**本会话**的档位（skill.mode）。
                 // 改它只写 prefs.sessions[sessionId]，不碰全局默认。
                 const mode = skill.mode ?? 'off'
@@ -820,6 +882,21 @@
         function apply(ctx) {
           try {
             ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'decision-skills: locales')
+
+            // 策略弹层要放宽。
+            //
+            // 原语的弹层宽度是写死的 min(380px, 100%)，props 里没有宽度这一项
+            // （className 会并到弹层根元素上）。380px 放四页签 + 每行一组滑块
+            // 会被挤成竖排，所以用一条**只命中本弹层**的规则覆盖：
+            // 选择器带 [role="dialog"] 把优先级提到 (0,2,0)，
+            // 不依赖样式表的加载顺序，也不动别人家的弹层。
+            ctx.effect(() => {
+              const style = document.createElement('style')
+              style.setAttribute('data-decision-skills', 'dialog-width')
+              style.textContent = '[role="dialog"].ds-policy-dialog{width:min(680px,100%);}'
+              document.head.appendChild(style)
+              return () => style.remove()
+            }, 'decision-skills: dialog width')
             const t = ctx.locale.bind(LOCALE_NS)
 
             const live = { namespace: null }
@@ -980,6 +1057,7 @@
                     path: skill.path ?? undefined,
                     archivePath: skill.archivePath ?? undefined,
                     source: skill.source ?? undefined,
+                    description: skill.description ?? undefined,
                   })
                   if (outcome && outcome.ok === false) {
                     DIAG('setSessionVisibility', 'rejected: ' + String(outcome.error))
@@ -1021,6 +1099,10 @@
                 closeLabel: t('policyClose'),
                 title: t('policyTitle'),
                 description: t('policyDesc'),
+                // 原语把弹层宽度写死在样式里（min(380px, 100%)），
+                // 属性表里没有宽度这一项，但 className 是透传的，
+                // 所以靠下面注入的那条规则把它撑宽。
+                className: 'ds-policy-dialog',
                 children: body,
               })
             }

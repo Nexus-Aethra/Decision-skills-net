@@ -139,9 +139,9 @@ session provider 现在做**双向**：
 
 ### 两个配套修正
 
-1. **策略候选不能污染目录**。会话 provider 产生的候选与真实条目同名，
+1. **策略候选不能污染目录**。会话 provider 的**放行项**与真实条目同名同路径，
    若参与去重会把真实条目的路径/来源顶掉（表现为「系统级技能跑到通用级」）。
-   现在给策略候选 `rank = 0`：**只在没有真实条目时填坑，绝不顶掉真实条目**。
+   所以目录侧直接跳过放行项；**屏蔽项反过来必须收下**，理由见 §3.7。
 2. **`overridden` 的语义**：看 prefs 里**有没有落键**，而不是「值是否与默认不同」。
    用户把档位设成与默认相同的值，仍然是一次显式决定，也要能「恢复默认」撤销。
 
@@ -149,6 +149,45 @@ session provider 现在做**双向**：
 
 每行的「恢复默认」只清掉这一条覆盖（`resetSessionVisibility({ sessionId, name })`），
 不动同会话的其它改动。不带 `name` 才是清整个会话。
+
+## 3.7 屏蔽不能让技能从界面上消失
+
+这是会话级策略最容易写错的一处，已经踩过。
+
+遮蔽候选的 `rank = 1` 是它能压过官方的**唯一**手段，代价是：在**带会话作用域**的
+那次 collect 里，真实条目被挤到更远的层，快照里这个技能只剩那条占位
+（描述是固定文案、没有 path）。
+
+早期的目录侧把「所有来自 session provider 的候选」一律跳过，于是链路变成：
+
+```
+用户在会话里点了「关闭」
+  → 写 prefs
+  → 注册表失效重算
+  → 快照里只剩遮蔽占位
+  → 目录侧跳过它
+  → 这个技能从会话面板 **和** 仓库页一起消失
+  → 用户再也没有地方把它点回「开启」
+```
+
+修法是把占位**补成一行完整的技能**。元数据按三级兜底取：
+
+| 来源 | 提供什么 | 什么时候有 |
+|---|---|---|
+| 内存快照 `knownRowsByName` | 描述、路径、来源、所属工作区 | 本次宿主存活期间见过这一行 |
+| prefs 记录 `locatorOf()` | 路径、归档路径、来源、描述 | 用户调过档位，**重启后仍然有** |
+| 占位自带文案 | 一句 `hidden by this session's skill policy` | 前两级都缺 |
+
+两条配套约束：
+
+- **内存是累积的，不是替换的**（`rememberRows()`）。本轮看不见的名字里，
+  被档位表显式提到的要留着——看不见正是屏蔽造成的；其余连续三轮没出现，
+  当作技能真被删了，丢掉，免得界面上挂着一行幽灵。
+- **写档位时顺手把描述存进 prefs**。否则宿主重启后内存是空的，
+  被屏蔽的行只能显示那句兜底文案——能点，但认不出是什么东西。
+
+验证方式：把某条项目级技能关掉，重启宿主（内存清零），再打开策略弹层——
+那一行仍然是「拦截」，描述与仓库归属都还在。
 
 ## 4. ⚠️ 铁律：provider 回调里绝不能回头调注册表
 
@@ -175,12 +214,19 @@ promise 拒绝，最后把 host 进程撑到 OOM（`FATAL ERROR: … heap out of
   // 全局默认。键是「磁盘路径 / 归档路径 / 技能名」，值是结构化记录。
   // 写记录而不是裸字符串，是因为会话层要**按名字**屏蔽，只存路径会让名字永久丢失。
   "visibility": {
-    "/home/u/.dsh/skills/alpha/SKILL.md": { "mode": "off", "name": "alpha", "path": "…", "source": "user-dsh" }
+    "/home/u/.dsh/skills/alpha/SKILL.md": {
+      "mode": "off", "name": "alpha", "path": "…", "source": "user-dsh",
+      // 描述也存一份：关掉之后快照里只剩遮蔽占位，界面上那一行
+      // 要靠它把描述认回来（宿主重启后内存是空的）。
+      "description": "Use when …"
+    }
   },
   // 会话覆盖。内层键是**技能名**——注册表的合并与去重都以名字为单位，
   // 用路径做键会出现「同名两条策略、注册表只认一条」的自相矛盾。
   "sessions": {
-    "session-1793…": { "alpha": { "mode": "on" } }
+    "session-1793…": {
+      "alpha": { "mode": "on", "path": "…", "source": "project-agents", "description": "Use when …" }
+    }
   },
   "projects": {}
 }
@@ -191,9 +237,12 @@ promise 拒绝，最后把 host 进程撑到 OOM（`FATAL ERROR: … heap out of
 | 方法 | 参数 | 作用 |
 |---|---|---|
 | `sessionPolicy` | `{sessionId}` | 该会话的放行策略（含 `mode` / `globalMode` / `overridden`） |
-| `setSessionVisibility` | `{sessionId, name, mode, path?, archivePath?, source?}` | 改这一个会话的档位 |
-| `resetSessionVisibility` | `{sessionId}` | 清掉该会话全部覆盖，回到跟随默认 |
-| `setVisibility` | `{key, name?, path?, mode, …}` | 改全局默认（仓库页滑块） |
+| `setSessionVisibility` | `{sessionId, name, mode, path?, archivePath?, source?, description?}` | 改这一个会话的档位 |
+| `resetSessionVisibility` | `{sessionId, name?}` | 带 name 只清这一条，不带清整个会话 |
+| `setVisibility` | `{key, name?, path?, mode, source?, description?, …}` | 改全局默认（仓库页滑块） |
+
+`description` 是**给界面认人用的**：技能被关掉之后，注册表快照里只剩遮蔽占位，
+描述只能从这里取回（详见 §3.7）。
 
 `sessionPolicy` 返回 `overridden`：该技能在本会话是否偏离了全局默认。
 界面用它区分「仅本会话」与「跟随默认」两种状态，并决定要不要显示「恢复默认」按钮。
@@ -205,3 +254,24 @@ promise 拒绝，最后把 host 进程撑到 OOM（`FATAL ERROR: … heap out of
 - **会话策略弹层**（三个点菜单 →「查看技能策略」）：三种来源**都有**三段式滑块，
   改动只写会话层，立刻生效。
 - 仓库页底部有一句说明，讲清这个页面的开关管的是「新会话的默认值」。
+
+分类分页两边都有，页签上带条数：
+
+| 位置 | 页签 |
+|---|---|
+| 仓库页 | 系统级 / 通用级 / 项目级 |
+| 策略弹层 | 全部 / 系统级 / 通用级 / 项目级 |
+
+弹层的汇总（放行 / 拦截 / 全部）**跟着当前页重算**——否则「系统级只有 12 行，
+汇总却写着全部 15」会让人怀疑数据。
+
+**弹层宽度**：原语（`@deepseek-ai/dsh-client-ui-primitives` 的 `Modal`）把宽度写死在
+样式里（`width: min(380px, 100%)`），props 里没有宽度这一项，但 `className` 会并到
+弹层根元素上。所以插件注入一条规则把本弹层撑到 680px：
+
+```css
+[role="dialog"].ds-policy-dialog { width: min(680px, 100%); }
+```
+
+选择器带上 `[role="dialog"]` 把优先级提到 (0,2,0)，压过原语的单类选择器，
+不去赌样式表加载顺序；`<style>` 挂在 `ctx.effect` 里，插件卸载时一起移除。

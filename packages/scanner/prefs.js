@@ -131,6 +131,7 @@ export function globalEntries(prefs) {
       path: typeof record.path === 'string' ? record.path : null,
       archivePath: typeof record.archivePath === 'string' ? record.archivePath : null,
       source: typeof record.source === 'string' ? record.source : 'runtime',
+      description: typeof record.description === 'string' ? record.description : null,
     })
   }
   return out
@@ -177,9 +178,37 @@ export function sessionOverrides(prefs, sessionId) {
       path: typeof record.path === 'string' ? record.path : null,
       archivePath: typeof record.archivePath === 'string' ? record.archivePath : null,
       source: typeof record.source === 'string' ? record.source : 'runtime',
+      description: typeof record.description === 'string' ? record.description : null,
     })
   }
   return out
+}
+
+/**
+ * 按技能名找回显式配置里记下的**位置**（会话覆盖优先，其次全局桶）。
+ *
+ * 给会话级策略的「遮蔽占位」用：那条占位候选一出现，就把真实条目顶到了
+ * 更远的层、目录快照里再也读不到它的路径与来源；宿主重启之后内存里也没有。
+ * 这时只剩用户上次调档位时顺手写下的 path / archivePath / source 能把这一行认回来。
+ *
+ * @param {object} prefs
+ * @param {string|null|undefined} sessionId
+ * @param {string} name
+ * @returns {{path: string|null, archivePath: string|null, source: string|null}|null}
+ */
+export function locatorOf(prefs, sessionId, name) {
+  if (typeof name !== 'string' || name === '') return null
+  for (const row of sessionOverrides(prefs, sessionId)) {
+    if (row.name === name) {
+      return { path: row.path, archivePath: row.archivePath, source: row.source, description: row.description }
+    }
+  }
+  for (const entry of globalEntries(prefs)) {
+    if (entry.name === name) {
+      return { path: entry.path, archivePath: entry.archivePath, source: entry.source, description: entry.description }
+    }
+  }
+  return null
 }
 
 /**

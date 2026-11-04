@@ -67,11 +67,20 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
   // 这条约束保证「会话里点了开启」不会被后面的兜底逻辑悄悄推翻。
   const decided = new Set()
 
+  // 记进 map 的不只是「要屏蔽」，还有**这一行在哪**（path / archivePath / source）。
+  // 原因见 list() 里遮蔽候选那一段：占位一出现，真实条目就读不到了，
+  // 界面能把这一行认出来、归到正确的仓库，全靠这里带出去的元数据。
+  const mark = (record) => ({
+    source: record.source,
+    path: record.path ?? null,
+    archivePath: record.archivePath ?? null,
+  })
+
   // ① 全局默认关闭项。系统级技能的键就是名字；磁盘级写入时带 name。
   for (const entry of globalEntries(prefs)) {
     if (entry.name === null) continue
     decided.add(entry.name)
-    if (entry.mode !== 'on') blocked.set(entry.name, { source: entry.source })
+    if (entry.mode !== 'on') blocked.set(entry.name, mark(entry))
   }
 
   // ② 会话覆盖压过全局。
@@ -79,7 +88,7 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
     if (!NAME_RE.test(row.name)) continue
     decided.add(row.name)
     if (row.mode === 'on') blocked.delete(row.name)
-    else blocked.set(row.name, { source: row.source })
+    else blocked.set(row.name, mark(row))
   }
 
   // ③ 兜底：已知行里没被显式配置过、但按默认档位不该放行的。
@@ -90,7 +99,7 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
   for (const row of knownRows) {
     if (typeof row?.name !== 'string' || !NAME_RE.test(row.name)) continue
     if (decided.has(row.name)) continue
-    if (resolveMode(prefs, sessionId, row) !== 'on') blocked.set(row.name, { source: row.source })
+    if (resolveMode(prefs, sessionId, row) !== 'on') blocked.set(row.name, mark(row))
   }
 
   return blocked
@@ -117,6 +126,11 @@ export function createSessionProvider({ sessionId, knownRows, systemRows, readBo
       let rows = []
       try { rows = typeof knownRows === 'function' ? knownRows() : [] } catch { rows = [] }
       const blocked = blockedNamesFor(prefs, sessionId, Array.isArray(rows) ? rows : [])
+      // 逐名索引：屏蔽占位要拿**真实那一行**的描述与位置来补齐自己。
+      const known = new Map()
+      for (const row of Array.isArray(rows) ? rows : []) {
+        if (typeof row?.name === 'string') known.set(row.name, row)
+      }
 
       // ② 放行：本会话要开、但**没有别的 provider 能提供**的技能。
       //
@@ -162,17 +176,36 @@ export function createSessionProvider({ sessionId, knownRows, systemRows, readBo
         })
       }
       for (const [name, info] of blocked) {
+        // 这条候选有个副作用：同层里它 rank 最小，会把**真实条目遮在下面**，
+        // 于是目录快照里这个技能只剩它这一条。所以它必须冒充得像一点——
+        // 描述、路径、来源都照抄真实行，否则界面上就只剩一行认不出、
+        // 点不开、也没法再打开的「隐藏项」。
+        const real = known.get(name)
+        const path = info?.path ?? real?.path ?? null
+        const archivePath = info?.archivePath ?? real?.archivePath ?? null
         out.push({
           name,
-          // description 不能为空（validateCandidate 拒绝空串），
-          // 但这条候选对模型永远不可见，内容合规即可。
-          description: "hidden by this session's skill policy",
+          // description 不能为空（validateCandidate 拒绝空串）。
+          description: (typeof real?.description === 'string' && real.description !== '')
+            ? real.description
+            : "hidden by this session's skill policy",
           invocation: { modelInvocable: false, userInvocable: false },
           // 带上来源：界面按 source 归仓库，缺失会被错归到「通用级」。
-          source: info?.source ?? 'runtime',
+          source: info?.source ?? real?.source ?? 'runtime',
           provider: providerName,
           rank: PRIORITY_RANK,
-          locator: { policy: 'blocked', name },
+          ...(path === null ? {} : { path }),
+          ...(archivePath === null ? {} : { archivePath }),
+          // 自定义字段统一放 locator：它是唯一确定会被带到 get() 的结构；
+          // 目录侧还会从这里的 archivePath / projectPath 补回磁盘位置。
+          locator: {
+            policy: 'blocked',
+            name,
+            path,
+            archivePath,
+            projectPath: real?.projectPath ?? null,
+            description: real?.description ?? null,
+          },
         })
       }
       return out

@@ -181,6 +181,8 @@ export class SkillManagerRemote {
       path: request?.path,
       archivePath: request?.archivePath,
       mode: request?.mode,
+      source: request?.source,
+      description: request?.description,
     })
   }
 
@@ -198,6 +200,7 @@ export class SkillManagerRemote {
       path: request?.path,
       archivePath: request?.archivePath,
       source: request?.source,
+      description: request?.description,
     })
   }
 

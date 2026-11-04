@@ -216,6 +216,9 @@ export class SkillStore {
       path: typeof input?.path === 'string' ? input.path : undefined,
       archivePath: typeof input?.archivePath === 'string' ? input.archivePath : undefined,
       source: typeof input?.source === 'string' ? input.source : undefined,
+      // 顺手记下描述：这一条被关掉之后，注册表快照里就只剩遮蔽占位，
+      // 界面上要显示的那一行只能靠这里把描述认回来（宿主重启后内存是空的）。
+      description: typeof input?.description === 'string' ? input.description : undefined,
     }
     const saved = await savePrefs(prefs)
     if (saved.ok !== true) return saved
@@ -253,6 +256,8 @@ export class SkillStore {
       path: typeof input?.path === 'string' ? input.path : undefined,
       archivePath: typeof input?.archivePath === 'string' ? input.archivePath : undefined,
       source: typeof input?.source === 'string' ? input.source : undefined,
+      // 同 setVisibility：被关掉后还要在界面上认出这一行，描述得存下来。
+      description: typeof input?.description === 'string' ? input.description : undefined,
     }
     const saved = await savePrefs(prefs)
     if (saved.ok !== true) return saved

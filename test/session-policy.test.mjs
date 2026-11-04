@@ -190,3 +190,65 @@ test('执行端真的按会话屏蔽：同注册表，A 拦截 B 放行', async 
     assert.ok(await skills.get('beta', { scope: agentB }), 'B 未配置的技能照常放行')
   })
 })
+/**
+ * 下面三条守的是同一个坑：**屏蔽会让那一行从目录里消失**。
+ *
+ * 遮蔽候选（invocation 两个 false）在更近的层把真实条目顶掉，
+ * 目录快照里就只剩它自己。若目录侧把它当作「不是真技能」跳过，
+ * 用户点一次「关闭」，这个技能就从会话面板和仓库页一起不见了，
+ * 再也没有地方点回来。所以它必须冒充得像：带描述、带路径、带来源。
+ */
+test('遮蔽占位带上真实那一行的元数据', async () => {
+  const path = '/w/.agents/skills/debugging/SKILL.md'
+  await withPrefs(
+    { version: 2, visibility: {}, sessions: { s1: { debugging: { mode: 'off', source: 'project-agents', path } } } },
+    async () => {
+      const provider = createSessionProvider({
+        sessionId: 's1',
+        knownRows: () => [{
+          name: 'debugging', scope: 'project', source: 'project-agents',
+          path, description: 'REAL DESCRIPTION', projectPath: '/w',
+        }],
+      })
+      const stub = (await provider.list()).find((c) => c.name === 'debugging')
+      assert.ok(stub, '屏蔽项必须出现在候选里')
+      assert.equal(stub.invocation.modelInvocable, false, '仍然对模型不可见')
+      assert.equal(stub.path, path, '路径要跟着走，否则目录侧认不出这一行')
+      assert.equal(stub.source, 'project-agents', '来源要在，否则会被错归到「通用级」')
+      assert.equal(stub.description, 'REAL DESCRIPTION', '描述沿用真实行')
+      assert.equal(stub.locator.projectPath, '/w', '工作区归属要带出去，仓库页按它分组')
+    },
+  )
+})
+
+test('locatorOf：没有内存记忆时也能从档位记录认回位置', async () => {
+  const { locatorOf } = await import('../packages/scanner/prefs.js')
+  const prefs = {
+    visibility: { '/g/SKILL.md': { mode: 'off', name: 'gamma', path: '/g/SKILL.md', source: 'user-dsh' } },
+    sessions: { s1: { delta: { mode: 'off', path: '/d/SKILL.md', source: 'project-agents' } } },
+  }
+  assert.deepEqual(locatorOf(prefs, 's1', 'delta'),
+    { path: '/d/SKILL.md', archivePath: null, source: 'project-agents', description: null })
+  assert.deepEqual(locatorOf(prefs, 's1', 'gamma'),
+    { path: '/g/SKILL.md', archivePath: null, source: 'user-dsh', description: null })
+  assert.equal(locatorOf(prefs, 's1', 'nobody'), null)
+})
+
+test('目录记忆：被屏蔽的行不丢，真被删掉的行会自己消失', async () => {
+  const { SkillScanner } = await import('../packages/scanner/index.js')
+  const scanner = new SkillScanner({ get: () => undefined })
+  const row = {
+    name: 'alpha', scope: 'project', source: 'project-agents', provider: 'fs',
+    path: '/w/a/SKILL.md', description: 'A', archivePath: null, projectPath: '/w', projectTitle: null,
+  }
+  const blocked = { visibility: {}, sessions: { s1: { alpha: { mode: 'off' } } } }
+  scanner.rememberRows([row], blocked, 's1')
+  scanner.rememberRows([], blocked, 's1')
+  assert.ok(scanner.knownRowsByName.has('alpha'), '被策略挡住的行要留在记忆里')
+  assert.equal(scanner.knownRowsByName.get('alpha').description, 'A', '描述留住才画得出那一行')
+  assert.equal(scanner.lastKnownRows.length, 1, '会话执行端靠这份快照兜底')
+
+  const empty = { visibility: {}, sessions: {} }
+  for (let i = 0; i < 3; i += 1) scanner.rememberRows([], empty, 's1')
+  assert.equal(scanner.knownRowsByName.has('alpha'), false, '真的没了就别一直挂在界面上')
+})

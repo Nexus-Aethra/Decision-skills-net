@@ -19,7 +19,7 @@ import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeRow, sortRows, EVENTS, SERVICES, SCOPE } from '../shared/index.js'
-import { loadPrefs, resolveMode, sessionOverrides, entryMode, hasSessionOverride } from './prefs.js'
+import { loadPrefs, resolveMode, sessionOverrides, globalEntries, entryMode, hasSessionOverride, locatorOf } from './prefs.js'
 import { installVisibility } from './visibility.js'
 import { installSessionPolicy } from './session.js'
 import { installChangeNotifier } from './notifier.js'
@@ -75,6 +75,10 @@ export class SkillScanner {
   constructor(ctx) {
     this.ctx = ctx
     this.name = SERVICES.scanner
+    // 见过的技能行（name -> 轻量行）。给会话级策略的**遮蔽占位**兜底：
+    // 占位候选会把它遮蔽的那条真实条目顶掉，之后的快照里就读不到了，
+    // 只剩这里记着的描述与位置能把那一行还原出来。
+    this.knownRowsByName = new Map()
   }
 
   /** 列出已注册工作区。 */
@@ -435,6 +439,53 @@ export class SkillScanner {
   }
 
   /**
+   * 记住见过的行，供会话级策略使用（provider 侧与策略行还原）。
+   *
+   * **累积而不是替换**：被会话策略屏蔽的技能，本轮快照里根本读不到
+   * （遮蔽候选把它顶掉了）。若这里跟着把它丢掉，下一轮就再也补不回
+   * 它的路径与描述，界面上那一行会彻底消失、连「恢复默认」都没处点。
+   *
+   * 又不能无限累积——技能真被删掉时那一行必须消失。折中：
+   * 被档位表显式提到的名字一直留着（看不见正是屏蔽造成的），
+   * 其余连续 MISS_LIMIT 轮没出现就当它没了。
+   *
+   * @param {Array} rows 本轮目录
+   * @param {object} prefs 档位表
+   * @param {string|undefined} sessionId 本轮口径的会话
+   */
+  rememberRows(rows, prefs, sessionId) {
+    const MISS_LIMIT = 3
+    const seen = new Set()
+    for (const row of rows) {
+      seen.add(row.name)
+      this.knownRowsByName.set(row.name, {
+        name: row.name,
+        scope: row.scope,
+        source: row.source,
+        provider: row.provider,
+        description: row.description,
+        path: row.path ?? null,
+        archivePath: row.archivePath ?? null,
+        projectPath: row.projectPath ?? null,
+        projectTitle: row.projectTitle ?? null,
+        misses: 0,
+      })
+    }
+    const explicit = new Set()
+    for (const entry of globalEntries(prefs)) {
+      if (typeof entry.name === 'string') explicit.add(entry.name)
+    }
+    for (const row of sessionOverrides(prefs, sessionId)) explicit.add(row.name)
+    for (const [name, entry] of this.knownRowsByName) {
+      if (seen.has(name)) continue
+      if (explicit.has(name)) { entry.misses = 0; continue }
+      entry.misses = (entry.misses ?? 0) + 1
+      if (entry.misses >= MISS_LIMIT) this.knownRowsByName.delete(name)
+    }
+    this.lastKnownRows = [...this.knownRowsByName.values()]
+  }
+
+  /**
    * 完整目录：注册表 + 项目根 + 安装目录 + asar。
    * @param agent 会话作用域，省略则只读全局与各工作区
    * @param sessionId 会话 id，用于解析会话级档位（省略则只看全局默认）
@@ -466,6 +517,10 @@ export class SkillScanner {
       if (rank(row) > rank(previous)) byName.set(row.name, row)
     }
 
+    // 档位表要在**读快照之前**拿到：下面会遇到会话策略的遮蔽占位，
+    // 那一行只能靠 prefs 里记下的位置认回来。
+    const prefs = await loadPrefs()
+
     let skills
     try { skills = this.ctx.get('skills') } catch { skills = undefined }
     let complete = true
@@ -493,12 +548,35 @@ export class SkillScanner {
         }
         if (snapshot.complete !== true) complete = false
         for (const summary of snapshot.skills) {
-          // 跳过会话级策略 provider 产生的候选：
-          //  - 屏蔽项是占位（描述是固定文案），不是真技能
-          //  - 放行项与真实条目同名，留着会把真条目的路径/来源顶掉
-          // 让它们只存在于注册表（模型侧），不进目录快照。
-          if (typeof summary.provider === 'string' && summary.provider.startsWith('decision-skills-session:')) continue
           const invocation = summary.invocation ?? {}
+          const isSessionPolicy = typeof summary.provider === 'string' && summary.provider.startsWith('decision-skills-session:')
+          // 会话策略 provider 的两类候选，处理方式正好相反：
+          //   放行项——与真实条目同名同路径，留着只会把真条目的路径 / 来源顶掉 → 跳过
+          //   屏蔽项——它已经把真实条目**遮在更远的层**，这一轮快照里读不到那条了。
+          //           跟着跳过就等于让这一行从界面上彻底消失：用户调一次「关闭」，
+          //           技能就从会话面板和仓库页一起不见了，连改回来的地方都没有。
+          //           所以照常收下，缺的描述 / 位置从记忆与档位记录里补。
+          if (isSessionPolicy && invocation.modelInvocable !== false) continue
+          if (isSessionPolicy) {
+            const remembered = this.knownRowsByName.get(summary.name)
+            const stored = locatorOf(prefs, sessionId, summary.name)
+            const path = remembered?.path ?? stored?.path ?? summary.path ?? null
+            const archivePath = remembered?.archivePath ?? stored?.archivePath ?? summary.archivePath ?? null
+            add(makeRow({
+              name: summary.name,
+              // 描述优先级：本轮内存 → 档位记录（写入时顺手存的）→ 占位的兜底文案
+              description: remembered?.description || stored?.description || summary.description,
+              // source 决定它归哪个仓库；缺失会被错归到「通用级」。
+              source: remembered?.source ?? stored?.source ?? summary.source,
+              provider: summary.provider,
+              path,
+              archivePath,
+              editable: typeof path === 'string' && path !== '',
+              projectPath: remembered?.projectPath ?? null,
+              projectTitle: remembered?.projectTitle ?? null,
+            }))
+            continue
+          }
           add(makeRow({
             name: summary.name,
             description: summary.description,
@@ -533,7 +611,6 @@ export class SkillScanner {
     // 两层解析（见 prefs.js 的 resolveMode）：
     //   会话覆盖 > 全局默认 > 按来源兜底
     // 传了 sessionId 就给**这个会话的实际口径**，没传就是全局默认口径。
-    const prefs = await loadPrefs()
     const rows = [...byName.values()].map((row) => {
       const mode = resolveMode(prefs, sessionId, row)
       const globalMode = resolveMode(prefs, null, row)
@@ -553,9 +630,10 @@ export class SkillScanner {
       }
     })
 
-    // 记一份「名字 + 来源」的轻量快照：会话执行端在 provider.list() 里
-    // 不能回调注册表，只能读内存，靠这份缓存兜底历史数据（全局键只有路径）。
-    this.lastKnownRows = rows.map((row) => ({ name: row.name, scope: row.scope, path: row.path }))
+    // 记一份轻量快照：会话执行端在 provider.list() 里不能回调注册表，
+    // 只能读内存——它靠这份缓存兜底历史数据（全局键只有路径），
+    // 目录侧靠它把**被自己遮蔽掉**的那一行还原出来。
+    this.rememberRows(rows, prefs, sessionId)
 
     return { skills: sortRows(rows), complete, errors }
   }
