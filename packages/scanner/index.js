@@ -19,7 +19,7 @@ import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeRow, sortRows, EVENTS, SERVICES, SCOPE } from '../shared/index.js'
-import { loadPrefs, resolveMode, sessionOverrides, entryMode } from './prefs.js'
+import { loadPrefs, resolveMode, sessionOverrides, entryMode, hasSessionOverride } from './prefs.js'
 import { installVisibility } from './visibility.js'
 import { installSessionPolicy } from './session.js'
 import { installChangeNotifier } from './notifier.js'
@@ -493,6 +493,11 @@ export class SkillScanner {
         }
         if (snapshot.complete !== true) complete = false
         for (const summary of snapshot.skills) {
+          // 跳过会话级策略 provider 产生的候选：
+          //  - 屏蔽项是占位（描述是固定文案），不是真技能
+          //  - 放行项与真实条目同名，留着会把真条目的路径/来源顶掉
+          // 让它们只存在于注册表（模型侧），不进目录快照。
+          if (typeof summary.provider === 'string' && summary.provider.startsWith('decision-skills-session:')) continue
           const invocation = summary.invocation ?? {}
           add(makeRow({
             name: summary.name,
@@ -538,8 +543,10 @@ export class SkillScanner {
         // 全局默认档位单列：仓库页显示的就是它，会话面板显示的是 mode。
         // 两者在有会话覆盖时会不一样，这正是「实例偏离默认」的可视化。
         globalMode,
-        // 这个会话是否显式调过。
-        overridden: mode !== globalMode,
+        // 这个会话是否**显式**调过：看 prefs 里有没有落键，
+        // 而不是比较两个值——用户把它设成与默认相同的值也是一次显式决定，
+        // 也要能「恢复默认」撤销。
+        overridden: hasSessionOverride(prefs, sessionId, row.name),
         // 智能态在接入决策模型前对 agent 不可见（等同于 off），
         // 但状态保留，将来接上模型只需改这里。
         visible: mode === 'on',
@@ -551,6 +558,65 @@ export class SkillScanner {
     this.lastKnownRows = rows.map((row) => ({ name: row.name, scope: row.scope, path: row.path }))
 
     return { skills: sortRows(rows), complete, errors }
+  }
+
+  /**
+   * 读技能正文，**完全不经过注册表**。
+   *
+   * 给会话级策略 provider 用：那个 provider 是在注册表 collect() 里被调的，
+   * 若在这里回调 ctx.skills.get() 就是无限递归（爆栈 → host OOM）。
+   * 所以只做磁盘 / asar 的直接读取。
+   *
+   * @param {{path?: string|null, archivePath?: string|null}} locator
+   * @returns {Promise<object|undefined>} 完整技能定义，读不到时 undefined
+   */
+  async rawBodyOf(locator) {
+    const name = typeof locator?.name === 'string' ? locator.name : ''
+    const archivePath = typeof locator?.archivePath === 'string' ? locator.archivePath : ''
+    const path = typeof locator?.path === 'string' ? locator.path : ''
+    // 候选上已经带了可信描述；正文解析不出来时用它兜底。
+    // asar 内的 SKILL.md 有时**没有** `---` 分隔符，直接以 key: 开头，
+    // parseFrontmatter 会认为没有 frontmatter，description 变成空串，
+    // 加载器随后报 "loaded skill ... requires a description"。
+    const fallbackDescription = typeof locator?.description === 'string' ? locator.description : ''
+    const fromText = (text) => {
+      let fm = parseFrontmatter(text)
+      if (!fm.hasFrontmatter && /^[A-Za-z][\w-]*\s*:/.test(text)) fm = parseFrontmatter('---\n' + text)
+      return fm
+    }
+    if (archivePath !== '') {
+      const archive = this.asarPath()
+      if (archive !== null) {
+        try {
+          const text = await readAsarFile(archive, archivePath)
+          if (text !== null) {
+            const fm = fromText(text)
+            return {
+              name: fm.fields.name ?? name,
+              description: fm.fields.description ?? fallbackDescription,
+              invocation: { modelInvocable: true, userInvocable: true },
+              source: 'bundled',
+              provider: 'decision-skills',
+              content: fm.body,
+            }
+          }
+        } catch { /* 退回磁盘 */ }
+      }
+    }
+    if (path === '') return undefined
+    try {
+      const fm = fromText(await readFile(path, 'utf8'))
+      return {
+        name: fm.fields.name ?? name,
+        description: fm.fields.description ?? fallbackDescription,
+        invocation: { modelInvocable: true, userInvocable: true },
+        source: 'bundled',
+        provider: 'decision-skills',
+        content: fm.body,
+      }
+    } catch {
+      return undefined
+    }
   }
 
   /**
@@ -646,6 +712,10 @@ export function apply(ctx) {
         // 历史数据兜底：全局档位可能只记了路径、没记名字，
         // 这里给出已知行让执行端能反查到名字。用缓存的方法行，不碰注册表。
         knownRows: () => scanner.lastKnownRows ?? [],
+        // 放行方向要靠这两项：系统级技能的候选与正文都由我们自己给，
+        // 因为模型读的是 preset 注册表，宿主级 visibility provider 不在里面。
+        systemRows: () => scanner.systemRows(),
+        readBody: (locator) => scanner.rawBodyOf(locator),
       })
       sessionPolicies.set(agent, handle)
     } catch (error) {

@@ -265,20 +265,37 @@ export class SkillStore {
   }
 
   /**
-   * 清掉某个会话的全部覆盖，回到「跟随全局默认」。
-   * @param {{sessionId: string}} input
+   * 清掉会话覆盖，回到「跟随全局默认」。
+   *
+   * 给了 name 就只清这一条（界面上每行的「恢复默认」就是它）；
+   * 不给 name 就清整个会话。两者都只在**真的有东西被清掉**时失效注册表。
+   *
+   * @param {{sessionId: string, name?: string}} input
    */
   async resetSessionVisibility(input) {
     const sessionId = input?.sessionId
     if (typeof sessionId !== 'string' || sessionId === '') return { ok: false, error: 'MISSING_SESSION' }
+    const name = typeof input?.name === 'string' && input.name !== '' ? input.name : undefined
     const prefs = await loadPrefs()
-    if (prefs.sessions[sessionId] === undefined) return { ok: true, sessionId, cleared: 0 }
-    const cleared = Object.keys(prefs.sessions[sessionId]).length
-    delete prefs.sessions[sessionId]
+    const table = prefs.sessions[sessionId]
+    if (table === undefined) return { ok: true, sessionId, name: name ?? null, cleared: 0 }
+    let cleared = 0
+    if (name === undefined) {
+      cleared = Object.keys(table).length
+      delete prefs.sessions[sessionId]
+    } else {
+      if (Object.hasOwn(table, name)) {
+        delete table[name]
+        cleared = 1
+      }
+      // 表空了就把会话键也删掉，别留空对象。
+      if (Object.keys(table).length === 0) delete prefs.sessions[sessionId]
+    }
+    if (cleared === 0) return { ok: true, sessionId, name: name ?? null, cleared: 0 }
     const saved = await savePrefs(prefs)
     if (saved.ok !== true) return saved
     await this.invalidate()
-    return { ok: true, sessionId, cleared }
+    return { ok: true, sessionId, name: name ?? null, cleared }
   }
 
   /**

@@ -808,7 +808,7 @@
                       ? el('button', {
                         key: 'rs', type: 'button', style: S.policyResetBtn,
                         disabled: isBusy,
-                        onClick: () => onReset(sessionId),
+                        onClick: () => onReset(sessionId, skill.name),
                       }, t('policyReset'))
                       : null,
                   ]),
@@ -991,9 +991,10 @@
                 await reload(sessionId)
               }
 
-              const reset = async (sessionId) => {
+              const reset = async (sessionId, name) => {
                 try {
-                  await callRemote('resetSessionVisibility', { sessionId })
+                  // 带 name：只把这一条恢复成跟随默认，别动同会话的其它改动。
+                  await callRemote('resetSessionVisibility', { sessionId, name })
                 } catch (error) {
                   DIAG('resetSessionVisibility', String((error && error.message) || error))
                 }
@@ -1011,7 +1012,7 @@
                   t,
                   busy,
                   onMode: (sessionId, skill, mode) => void setMode(sessionId, skill, mode),
-                  onReset: (sessionId) => void reset(sessionId),
+                  onReset: (sessionId, name) => void reset(sessionId, name),
                 })
               }
               return el(Primitives.Modal, {

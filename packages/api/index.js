@@ -201,9 +201,12 @@ export class SkillManagerRemote {
     })
   }
 
-  /** 清掉某个会话的全部覆盖，回到「跟随全局默认」。 */
+  /**
+   * 清掉会话覆盖，回到「跟随全局默认」。
+   * 带 name 只清该技能（界面每行的「恢复默认」），不带则清整个会话。
+   */
   async resetSessionVisibility(request) {
-    return this.store.resetSessionVisibility({ sessionId: request?.sessionId })
+    return this.store.resetSessionVisibility({ sessionId: request?.sessionId, name: request?.name })
   }
 
   /** 提升：把项目技能复制到 ~/.dsh/skills/，成为通用级。 */

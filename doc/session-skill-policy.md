@@ -102,6 +102,54 @@ agent.ctx.get('skills').registerProvider(...)   // 落在 agent 的层里
 
 两个会话互不污染，缓存也不串（`collectCacheKey` 含 scope 链，本来就按作用域隔离）。
 
+## 3.5 关键发现：宿主里不止一个技能注册表
+
+这是把功能真正跑通时才暴露出来的，只看源码看不出来：
+
+```
+宿主级注册表（ctx.get('skills')）
+  ├─ 我们的 visibility provider   ← UI / 仓库页读这里
+  └─ 项目级发现（cwd 相关）
+
+preset 级注册表（agent.ctx.get('skills')，模型实际读的）
+  ├─ skill-filesystem（用户级 / 项目级技能）
+  └─ 我们的 session provider      ← 只有它能影响模型
+```
+
+后果：**visibility provider 把「系统级技能设为开启」这件事只告诉了 UI，没告诉模型。**
+实测证据（容器内）：
+
+| 操作 | 界面 | 模型 |
+|---|---|---|
+| 仓库页把内嵌技能设为「开启」 | 显示开启 | `skill "X" is unknown or no longer available` |
+| 会话面板把该技能设为「关闭」 | 显示拦截 | `not available for model invocation` ✓ |
+
+也就是说：**屏蔽一直有效（走 session provider），放行无效（走 visibility provider）。**
+
+### 修法：放行也由 session provider 负责
+
+session provider 现在做**双向**：
+
+- **屏蔽**：对不该见的名字返回 `modelInvocable: false` 的遮蔽候选（rank 1，压掉官方同名条目）。
+- **放行**：对「本会话该开、且我们能不经注册表读到」的系统级技能，直接给出**真实候选**，
+  并由它自己的 `get()` 读正文（asar / 磁盘）。因为它在 preset 注册表里，模型才看得见。
+
+放行的候选来自 `scanner.systemRows()`（只扫 asar 与安装 assets，**不碰注册表**），
+正文由 `scanner.rawBodyOf()` 读——同样绝不走 `ctx.skills.get()`，否则就是那条 OOM 老路。
+
+### 两个配套修正
+
+1. **策略候选不能污染目录**。会话 provider 产生的候选与真实条目同名，
+   若参与去重会把真实条目的路径/来源顶掉（表现为「系统级技能跑到通用级」）。
+   现在给策略候选 `rank = 0`：**只在没有真实条目时填坑，绝不顶掉真实条目**。
+2. **`overridden` 的语义**：看 prefs 里**有没有落键**，而不是「值是否与默认不同」。
+   用户把档位设成与默认相同的值，仍然是一次显式决定，也要能「恢复默认」撤销。
+
+## 3.6 「恢复默认」是**按行**的
+
+每行的「恢复默认」只清掉这一条覆盖（`resetSessionVisibility({ sessionId, name })`），
+不动同会话的其它改动。不带 `name` 才是清整个会话。
+
 ## 4. ⚠️ 铁律：provider 回调里绝不能回头调注册表
 
 `provider.list()` 是**被注册表 collect() 调用**的。若在里面再调

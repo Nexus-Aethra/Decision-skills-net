@@ -207,6 +207,24 @@ export function defaultMode(row) {
   return 'on'
 }
 
+/**
+ * 这个会话是否**显式**调过这条技能。
+ *
+ * 注意与「值是否不同于默认」区分：用户把它设成和默认一样的值，
+ * 仍然是一次显式决定（也要能「恢复默认」撤销）。所以看表里有没有这个键，
+ * 而不是比较两个值。
+ *
+ * @param {object} prefs
+ * @param {string|null|undefined} sessionId
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function hasSessionOverride(prefs, sessionId, name) {
+  if (typeof sessionId !== 'string' || sessionId === '') return false
+  const table = prefs.sessions?.[sessionId]
+  return table !== undefined && Object.hasOwn(table, name)
+}
+
 /** 三态里只有 on 对 agent 真的可见。智能档待决策模型接入后才有独立行为。 */
 export function isVisibleMode(mode) {
   return mode === 'on'

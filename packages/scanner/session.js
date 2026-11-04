@@ -59,10 +59,10 @@ const PRIORITY_RANK = 1
  * @param {object} prefs
  * @param {string} sessionId
  * @param {Array<{name: string, scope?: string}>} [knownRows] 已知技能行（可为空）
- * @returns {Set<string>}
+ * @returns {Map<string, {source?: string}>} 技能名 -> 该行来源（界面按来源归仓库）
  */
 export function blockedNamesFor(prefs, sessionId, knownRows = []) {
-  const blocked = new Set()
+  const blocked = new Map()
   // 已经由显式配置定过调的门类；③ 不再改动它们。
   // 这条约束保证「会话里点了开启」不会被后面的兜底逻辑悄悄推翻。
   const decided = new Set()
@@ -71,7 +71,7 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
   for (const entry of globalEntries(prefs)) {
     if (entry.name === null) continue
     decided.add(entry.name)
-    if (entry.mode !== 'on') blocked.add(entry.name)
+    if (entry.mode !== 'on') blocked.set(entry.name, { source: entry.source })
   }
 
   // ② 会话覆盖压过全局。
@@ -79,7 +79,7 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
     if (!NAME_RE.test(row.name)) continue
     decided.add(row.name)
     if (row.mode === 'on') blocked.delete(row.name)
-    else blocked.add(row.name)
+    else blocked.set(row.name, { source: row.source })
   }
 
   // ③ 兜底：已知行里没被显式配置过、但按默认档位不该放行的。
@@ -90,14 +90,14 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
   for (const row of knownRows) {
     if (typeof row?.name !== 'string' || !NAME_RE.test(row.name)) continue
     if (decided.has(row.name)) continue
-    if (resolveMode(prefs, sessionId, row) !== 'on') blocked.add(row.name)
+    if (resolveMode(prefs, sessionId, row) !== 'on') blocked.set(row.name, { source: row.source })
   }
 
   return blocked
 }
 
 /**
- * 造这个会话的策略 provider（只屏蔽）。
+ * 造这个会话的策略 provider：**双向**——屏蔽不该见的，补充该见却没人提供的。
  *
  * @param {object} deps
  * @param {string} deps.sessionId
@@ -105,7 +105,7 @@ export function blockedNamesFor(prefs, sessionId, knownRows = []) {
  *        已知技能行；给不出来也不影响主流程（只是少了历史数据兜底）
  * @returns {object} SkillProvider
  */
-export function createSessionProvider({ sessionId, knownRows }) {
+export function createSessionProvider({ sessionId, knownRows, systemRows, readBody }) {
   const providerName = SESSION_PROVIDER_PREFIX + sessionId
 
   return {
@@ -118,15 +118,58 @@ export function createSessionProvider({ sessionId, knownRows }) {
       try { rows = typeof knownRows === 'function' ? knownRows() : [] } catch { rows = [] }
       const blocked = blockedNamesFor(prefs, sessionId, Array.isArray(rows) ? rows : [])
 
+      // ② 放行：本会话要开、但**没有别的 provider 能提供**的技能。
+      //
+      // 为什么需要这一段：宿主里存在不止一个技能注册表。
+      // 宿主级注册表（UI 读的那个）里有我们的 visibility provider，
+      // 但模型实际读的是 preset 级注册表——visibility provider 并不在里面。
+      // 所以「全局开关打开」这条路径对模型无效，必须由挂在会话层的
+      // 这个 provider 自己把系统级技能的真实候选交出去。
+      //
+      // 只处理 scanner 能**不经注册表**读到的系统级行（asar / 安装 assets）；
+      // 官方 provider 认领的那些它自己会给，不用我们管。
+      let allowed = []
+      if (typeof systemRows === 'function') {
+        let rows = []
+        try { rows = await systemRows() } catch { rows = [] }
+        for (const row of rows) {
+          if (row.scope !== 'system') continue
+          if (typeof row.name !== 'string' || !NAME_RE.test(row.name)) continue
+          if (blocked.has(row.name)) continue
+          if (resolveMode(prefs, sessionId, row) !== 'on') continue
+          allowed.push(row)
+        }
+      }
+
       const out = []
-      for (const name of blocked) {
+      for (const row of allowed) {
+        out.push({
+          name: row.name,
+          description: row.description,
+          ...(row.whenToUse ? { whenToUse: row.whenToUse } : {}),
+          invocation: { modelInvocable: true, userInvocable: true },
+          source: row.source ?? 'bundled',
+          provider: providerName,
+          rank: PRIORITY_RANK,
+          ...(row.path ? { path: row.path } : {}),
+          locator: {
+            policy: 'allowed',
+            name: row.name,
+            description: row.description,
+            path: row.path ?? null,
+            archivePath: row.archivePath ?? null,
+          },
+        })
+      }
+      for (const [name, info] of blocked) {
         out.push({
           name,
           // description 不能为空（validateCandidate 拒绝空串），
           // 但这条候选对模型永远不可见，内容合规即可。
           description: "hidden by this session's skill policy",
           invocation: { modelInvocable: false, userInvocable: false },
-          source: 'runtime',
+          // 带上来源：界面按 source 归仓库，缺失会被错归到「通用级」。
+          source: info?.source ?? 'runtime',
           provider: providerName,
           rank: PRIORITY_RANK,
           locator: { policy: 'blocked', name },
@@ -135,7 +178,12 @@ export function createSessionProvider({ sessionId, knownRows }) {
       return out
     },
 
-    async get() {
+    async get(candidate) {
+      const locator = candidate?.locator ?? {}
+      // 放行的系统级技能：正文由我们读（内嵌资源没有可交给官方的磁盘路径）。
+      if (locator.policy === 'allowed' && typeof readBody === 'function') {
+        return readBody(locator)
+      }
       // 被屏蔽的技能不该被加载。
       return undefined
     },
@@ -158,7 +206,12 @@ export function installSessionPolicy(agent, deps) {
   // 没有 skills 服务的会话（精简部署、或 preset 没挂注册表）安静跳过：
   // 少一个会话级开关，比让插件在这里抛错好。
   if (skills === undefined || skills === null) return { dispose: () => {} }
-  const provider = createSessionProvider({ sessionId: deps.sessionId, knownRows: deps.knownRows })
+  const provider = createSessionProvider({
+    sessionId: deps.sessionId,
+    knownRows: deps.knownRows,
+    systemRows: deps.systemRows,
+    readBody: deps.readBody,
+  })
   let unregister
   try {
     unregister = skills.registerProvider(() => provider)
